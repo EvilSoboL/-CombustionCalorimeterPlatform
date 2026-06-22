@@ -4,7 +4,7 @@ import csv
 import math
 import statistics
 from bisect import bisect_left, bisect_right
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .models import GasData, OscilloscopeData, ProcessingSettings, Regime, RegimeResult
@@ -14,6 +14,14 @@ def common_time_range(
     gas: GasData, temperature: OscilloscopeData, flow: OscilloscopeData
 ) -> tuple[datetime, datetime]:
     return max(gas.start, temperature.start, flow.start), min(gas.end, temperature.end, flow.end)
+
+
+def gas_contains_minute(gas: GasData, value: datetime) -> bool:
+    """Return whether XLSX has at least one timestamp in the selected minute."""
+    minute_start = value.replace(second=0, microsecond=0)
+    minute_end = minute_start + timedelta(minutes=1)
+    index = bisect_left(gas.timestamps, minute_start)
+    return index < len(gas.timestamps) and gas.timestamps[index] < minute_end
 
 
 def validate_regimes(

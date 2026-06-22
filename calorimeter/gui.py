@@ -7,31 +7,17 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .models import GasData, OscilloscopeData, ProcessingSettings, Regime
-from .processing import common_time_range, export_csv, process_experiment
+from .processing import common_time_range, export_csv, gas_contains_minute, process_experiment
 from .readers import read_gas_xlsx, read_oscilloscope_txt
 
 
-def parse_user_datetime(value: str, reference_date: date) -> datetime:
+def parse_user_time(value: str, reference_date: date) -> datetime:
     text = value.strip()
-    formats = (
-        "%Y-%m-%d %H:%M:%S",
-        "%d.%m.%Y %H:%M:%S",
-        "%d-%m-%Y %H:%M:%S",
-    )
-    for fmt in formats:
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            pass
-    for fmt in ("%H:%M:%S", "%H:%M"):
-        try:
-            parsed = datetime.strptime(text, fmt).time()
-            return datetime.combine(reference_date, parsed)
-        except ValueError:
-            pass
-    raise ValueError(
-        "Введите время как ЧЧ:ММ:СС или дату и время как ГГГГ-ММ-ДД ЧЧ:ММ:СС"
-    )
+    try:
+        parsed = datetime.strptime(text, "%H:%M").time()
+    except ValueError as exc:
+        raise ValueError("Выберите время в формате ЧЧ:ММ") from exc
+    return datetime.combine(reference_date, parsed)
 
 
 def _format_time(value: datetime) -> str:
@@ -113,14 +99,22 @@ class CalorimeterApp(ttk.Frame):
         editor.columnconfigure(3, weight=1)
         editor.columnconfigure(5, weight=1)
         self._entry(editor, 0, 0, "Название режима", self.regime_name, width=18)
-        self._entry(editor, 0, 2, "Начало", self.regime_start, width=20)
-        self._entry(editor, 0, 4, "Конец", self.regime_end, width=20)
+        ttk.Label(editor, text="Начало").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=3)
+        self.start_time_combo = ttk.Combobox(
+            editor, textvariable=self.regime_start, width=8, state="readonly"
+        )
+        self.start_time_combo.grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=3)
+        ttk.Label(editor, text="Конец").grid(row=0, column=4, sticky="w", padx=(0, 6), pady=3)
+        self.end_time_combo = ttk.Combobox(
+            editor, textvariable=self.regime_end, width=8, state="readonly"
+        )
+        self.end_time_combo.grid(row=0, column=5, sticky="ew", padx=(0, 8), pady=3)
         ttk.Button(editor, text="Добавить", command=self._add_regime).grid(row=0, column=6, padx=(8, 3))
         ttk.Button(editor, text="Изменить", command=self._update_regime).grid(row=0, column=7, padx=3)
         ttk.Button(editor, text="Удалить", command=self._delete_regime).grid(row=0, column=8, padx=(3, 0))
         ttk.Label(
             editor,
-            text="Формат: ЧЧ:ММ:СС или ГГГГ-ММ-ДД ЧЧ:ММ:СС. Границы включаются в выборку.",
+            text="Выберите начало и конец в формате ЧЧ:ММ из времени, найденного в XLSX.",
             foreground="#555555",
         ).grid(row=1, column=0, columnspan=9, sticky="w", pady=(7, 0))
 
@@ -215,6 +209,11 @@ class CalorimeterApp(ttk.Frame):
         self.gas_data = gas
         self.temperature_data = temperature
         self.flow_data = flow
+        available_minutes = sorted({timestamp.strftime("%H:%M") for timestamp in gas.timestamps})
+        self.start_time_combo.configure(values=available_minutes)
+        self.end_time_combo.configure(values=available_minutes)
+        self.regime_start.set("")
+        self.regime_end.set("")
         self.source_summary.set(
             f"Общий диапазон: {_format_time(start)} — {_format_time(end)}; "
             f"газовых колонок: {len(gas.columns)}"
@@ -233,10 +232,19 @@ class CalorimeterApp(ttk.Frame):
 
     def _read_regime_editor(self) -> Regime:
         reference = self._reference_date()
+        if self.gas_data is None:
+            raise ValueError("Сначала загрузите XLSX")
+        start = parse_user_time(self.regime_start.get(), reference)
+        end = parse_user_time(self.regime_end.get(), reference)
+        for label, value in (("начала", start), ("конца", end)):
+            if not gas_contains_minute(self.gas_data, value):
+                raise ValueError(
+                    f"Время {label} {value:%H:%M} отсутствует в первой колонке XLSX"
+                )
         return Regime(
             self.regime_name.get().strip(),
-            parse_user_datetime(self.regime_start.get(), reference),
-            parse_user_datetime(self.regime_end.get(), reference),
+            start,
+            end,
         )
 
     def _add_regime(self) -> None:
@@ -296,8 +304,8 @@ class CalorimeterApp(ttk.Frame):
             return
         regime = self.regimes[index]
         self.regime_name.set(regime.name)
-        self.regime_start.set(_format_time(regime.start))
-        self.regime_end.set(_format_time(regime.end))
+        self.regime_start.set(regime.start.strftime("%H:%M"))
+        self.regime_end.set(regime.end.strftime("%H:%M"))
 
     def _clear_regime_editor(self) -> None:
         self.regime_name.set("")
