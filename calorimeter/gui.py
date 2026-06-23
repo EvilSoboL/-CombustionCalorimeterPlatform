@@ -30,24 +30,27 @@ class CalorimeterApp(ttk.Frame):
         self.master = master
         self.gas_data: GasData | None = None
         self.temperature_data: OscilloscopeData | None = None
-        self.flow_data: OscilloscopeData | None = None
+        self.water_flow_data: OscilloscopeData | None = None
+        self.fuel_flow_data: OscilloscopeData | None = None
         self.regimes: list[Regime] = []
 
         self.gas_path = tk.StringVar()
         self.temperature_path = tk.StringVar()
-        self.flow_path = tk.StringVar()
+        self.water_flow_path = tk.StringVar()
+        self.fuel_flow_path = tk.StringVar()
         self.experiment_name = tk.StringVar()
-        self.temp_coefficient = tk.StringVar()
-        self.temp_offset = tk.StringVar(value="0")
-        self.flow_coefficient = tk.StringVar()
-        self.flow_zero = tk.StringVar(value="0")
+        self.water_liters_per_pulse = tk.StringVar()
+        self.fuel_flow_coefficient = tk.StringVar()
+        self.fuel_flow_zero = tk.StringVar(value="0")
         self.density = tk.StringVar(value="1000")
         self.heat_capacity = tk.StringVar(value="4184")
         self.regime_name = tk.StringVar()
         self.regime_start = tk.StringVar()
         self.regime_end = tk.StringVar()
         self.source_summary = tk.StringVar(value="Файлы еще не загружены")
-        self.status = tk.StringVar(value="Выберите три файла и нажмите «Загрузить и проверить»")
+        self.status = tk.StringVar(
+            value="Выберите XLSX газоанализатора. TXT датчиков можно добавить при необходимости."
+        )
 
         self._build_ui()
 
@@ -61,14 +64,39 @@ class CalorimeterApp(ttk.Frame):
         sources = ttk.LabelFrame(self, text="1. Исходные данные", padding=10)
         sources.grid(row=0, column=0, sticky="ew")
         sources.columnconfigure(1, weight=1)
-        self._file_row(sources, 0, "Газоанализатор XLSX", self.gas_path, (("Excel XLSX", "*.xlsx"),))
-        self._file_row(sources, 1, "Температура TXT (2 канала)", self.temperature_path, (("TXT", "*.txt"),))
-        self._file_row(sources, 2, "Расход TXT (1 канал)", self.flow_path, (("TXT", "*.txt"),))
+        self._file_row(
+            sources,
+            0,
+            "Газоанализатор XLSX (обязательно)",
+            self.gas_path,
+            (("Excel XLSX", "*.xlsx"),),
+        )
+        self._file_row(
+            sources,
+            1,
+            "Температура TXT (опционально, 2 канала)",
+            self.temperature_path,
+            (("TXT", "*.txt"),),
+        )
+        self._file_row(
+            sources,
+            2,
+            "Расход воды TXT (опционально, 1 канал)",
+            self.water_flow_path,
+            (("TXT", "*.txt"),),
+        )
+        self._file_row(
+            sources,
+            3,
+            "Расход топлива TXT (опционально, 1 канал)",
+            self.fuel_flow_path,
+            (("TXT", "*.txt"),),
+        )
         ttk.Button(sources, text="Загрузить и проверить", command=self._load_sources).grid(
-            row=3, column=2, sticky="e", pady=(8, 0)
+            row=4, column=2, sticky="e", pady=(8, 0)
         )
         ttk.Label(sources, textvariable=self.source_summary, foreground="#284f73").grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=(8, 0)
+            row=4, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
 
         settings = ttk.LabelFrame(self, text="2. Калибровка и свойства теплоносителя", padding=10)
@@ -76,17 +104,24 @@ class CalorimeterApp(ttk.Frame):
         for column in (1, 3, 5):
             settings.columnconfigure(column, weight=1)
         self._entry(settings, 0, 0, "Название эксперимента", self.experiment_name, width=24)
-        self._entry(settings, 0, 2, "Температура, °C/В", self.temp_coefficient)
-        self._entry(settings, 0, 4, "Смещение температуры, °C", self.temp_offset)
-        self._entry(settings, 1, 0, "Расход, л/(мин·В)", self.flow_coefficient)
-        self._entry(settings, 1, 2, "Нулевой сигнал расхода, В", self.flow_zero)
-        self._entry(settings, 1, 4, "Плотность, кг/м³", self.density)
-        self._entry(settings, 2, 0, "Теплоемкость, Дж/(кг·°C)", self.heat_capacity)
+        self._entry(settings, 0, 2, "Вода, л/импульс", self.water_liters_per_pulse)
+        self._entry(settings, 0, 4, "Топливо, л/(мин·В)", self.fuel_flow_coefficient)
+        self._entry(settings, 1, 0, "Нулевой сигнал топлива, В", self.fuel_flow_zero)
+        self._entry(settings, 1, 2, "Плотность воды, кг/м³", self.density)
+        self._entry(settings, 1, 4, "Теплоемкость воды, Дж/(кг·°C)", self.heat_capacity)
         ttk.Label(
             settings,
-            text="T = U·kT + bT;  расход = max(0, (U − U0)·kV). Коэффициенты берутся из калибровки датчиков.",
+            text=(
+                "TXT-файлы и их коэффициенты необязательны: без них CSV будет содержать только XLSX. "
+                "Вода, л/импульс — паспортный объем за один импульс расходомера; если указан K в имп/л, введите 1/K. "
+                "Топливо, л/(мин·В) — сколько л/мин дает 1 В сверх нуля. "
+                "Нулевой сигнал топлива — напряжение датчика при нулевом расходе, оно вычитается из U. "
+                "Плотность и теплоемкость нужны только для расчета тепла."
+            ),
             foreground="#555555",
-        ).grid(row=2, column=2, columnspan=4, sticky="w", padx=(8, 0), pady=(7, 0))
+            wraplength=1040,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(7, 0))
 
         regimes_frame = ttk.LabelFrame(self, text="3. Стационарные режимы", padding=10)
         regimes_frame.grid(row=2, column=0, sticky="nsew")
@@ -189,45 +224,72 @@ class CalorimeterApp(ttk.Frame):
             variable.set(selected)
 
     def _load_sources(self) -> None:
-        paths = (self.gas_path.get().strip(), self.temperature_path.get().strip(), self.flow_path.get().strip())
-        if not all(paths):
-            messagebox.showerror("Не выбраны файлы", "Укажите XLSX, TXT температуры и TXT расхода")
+        gas_path = self.gas_path.get().strip()
+        temperature_path = self.temperature_path.get().strip()
+        water_flow_path = self.water_flow_path.get().strip()
+        fuel_flow_path = self.fuel_flow_path.get().strip()
+        if not gas_path:
+            messagebox.showerror(
+                "Не выбран XLSX",
+                "Укажите XLSX файл газоанализатора. Остальные файлы можно оставить пустыми.",
+            )
             return
         self.status.set("Чтение файлов…")
         self.master.update_idletasks()
         try:
-            gas = read_gas_xlsx(paths[0])
-            temperature = read_oscilloscope_txt(paths[1], expected_channels=2)
-            flow = read_oscilloscope_txt(paths[2], expected_channels=1)
-            start, end = common_time_range(gas, temperature, flow)
+            gas = read_gas_xlsx(gas_path)
+            temperature = (
+                read_oscilloscope_txt(temperature_path, expected_channels=2)
+                if temperature_path
+                else None
+            )
+            water_flow = (
+                read_oscilloscope_txt(water_flow_path, expected_channels=1)
+                if water_flow_path
+                else None
+            )
+            fuel_flow = (
+                read_oscilloscope_txt(fuel_flow_path, expected_channels=1)
+                if fuel_flow_path
+                else None
+            )
+            start, end = common_time_range(gas, temperature, water_flow, fuel_flow)
             if start >= end:
-                raise ValueError("У трех файлов нет общего временного диапазона")
+                raise ValueError("У загруженных файлов нет общего временного диапазона")
         except Exception as exc:
             self.status.set("Ошибка загрузки")
             messagebox.showerror("Ошибка исходных данных", str(exc))
             return
         self.gas_data = gas
         self.temperature_data = temperature
-        self.flow_data = flow
+        self.water_flow_data = water_flow
+        self.fuel_flow_data = fuel_flow
         available_minutes = sorted({timestamp.strftime("%H:%M") for timestamp in gas.timestamps})
         self.start_time_combo.configure(values=available_minutes)
         self.end_time_combo.configure(values=available_minutes)
         self.regime_start.set("")
         self.regime_end.set("")
+        range_label = "Общий диапазон загруженных файлов" if any(
+            (temperature, water_flow, fuel_flow)
+        ) else "Диапазон XLSX"
         self.source_summary.set(
-            f"Общий диапазон: {_format_time(start)} — {_format_time(end)}; "
+            f"{range_label}: {_format_time(start)} — {_format_time(end)}; "
             f"газовых колонок: {len(gas.columns)}"
         )
-        self.status.set(
-            f"Загружено: XLSX {len(gas.timestamps)} строк, температура {len(temperature.timestamps)}, "
-            f"расход {len(flow.timestamps)}"
-        )
+        loaded = [f"XLSX {len(gas.timestamps)} строк"]
+        if temperature is not None:
+            loaded.append(f"температура {len(temperature.timestamps)}")
+        if water_flow is not None:
+            loaded.append(f"вода {len(water_flow.timestamps)}")
+        if fuel_flow is not None:
+            loaded.append(f"топливо {len(fuel_flow.timestamps)}")
+        self.status.set("Загружено: " + ", ".join(loaded))
         if not self.experiment_name.get().strip():
-            self.experiment_name.set(Path(paths[0]).stem)
+            self.experiment_name.set(Path(gas_path).stem)
 
     def _reference_date(self) -> date:
         if self.gas_data is None:
-            raise ValueError("Сначала загрузите исходные файлы")
+            raise ValueError("Сначала загрузите XLSX")
         return self.gas_data.start.date()
 
     def _read_regime_editor(self) -> Regime:
@@ -319,31 +381,40 @@ class CalorimeterApp(ttk.Frame):
         except ValueError as exc:
             raise ValueError(f"Поле «{name}» должно содержать число") from exc
 
+    @staticmethod
+    def _optional_number(value: str, name: str) -> float | None:
+        if not value.strip():
+            return None
+        return CalorimeterApp._number(value, name)
+
     def _settings(self) -> ProcessingSettings:
+        fuel_zero = self._optional_number(self.fuel_flow_zero.get(), "Нулевой сигнал топлива")
+        density = self._optional_number(self.density.get(), "Плотность")
+        heat_capacity = self._optional_number(self.heat_capacity.get(), "Теплоемкость")
         return ProcessingSettings(
             experiment_name=self.experiment_name.get().strip(),
-            temperature_coefficient_c_per_v=self._number(
-                self.temp_coefficient.get(), "Температура, °C/В"
+            water_liters_per_pulse=self._optional_number(
+                self.water_liters_per_pulse.get(), "Вода, л/импульс"
             ),
-            temperature_offset_c=self._number(self.temp_offset.get(), "Смещение температуры"),
-            flow_coefficient_l_min_per_v=self._number(
-                self.flow_coefficient.get(), "Расход, л/(мин·В)"
+            fuel_flow_coefficient_l_min_per_v=self._optional_number(
+                self.fuel_flow_coefficient.get(), "Топливо, л/(мин·В)"
             ),
-            flow_zero_v=self._number(self.flow_zero.get(), "Нулевой сигнал расхода"),
-            density_kg_m3=self._number(self.density.get(), "Плотность"),
-            heat_capacity_j_kg_c=self._number(self.heat_capacity.get(), "Теплоемкость"),
+            fuel_flow_zero_v=0.0 if fuel_zero is None else fuel_zero,
+            density_kg_m3=1000.0 if density is None else density,
+            heat_capacity_j_kg_c=4184.0 if heat_capacity is None else heat_capacity,
         )
 
     def _process(self) -> None:
-        if self.gas_data is None or self.temperature_data is None or self.flow_data is None:
-            messagebox.showerror("Нет данных", "Сначала загрузите и проверьте три исходных файла")
+        if self.gas_data is None:
+            messagebox.showerror("Нет данных", "Сначала загрузите и проверьте XLSX газоанализатора")
             return
         try:
             settings = self._settings()
             results = process_experiment(
                 self.gas_data,
                 self.temperature_data,
-                self.flow_data,
+                self.water_flow_data,
+                self.fuel_flow_data,
                 self.regimes,
                 settings,
             )

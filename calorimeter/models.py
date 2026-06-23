@@ -20,20 +20,22 @@ class Regime:
 @dataclass(frozen=True)
 class ProcessingSettings:
     experiment_name: str
-    temperature_coefficient_c_per_v: float
-    temperature_offset_c: float = 0.0
-    flow_coefficient_l_min_per_v: float = 1.0
-    flow_zero_v: float = 0.0
+    water_liters_per_pulse: float | None = None
+    fuel_flow_coefficient_l_min_per_v: float | None = None
+    fuel_flow_zero_v: float = 0.0
     density_kg_m3: float = 1000.0
     heat_capacity_j_kg_c: float = 4184.0
 
     def __post_init__(self) -> None:
         if not self.experiment_name.strip():
             raise ValueError("Название эксперимента не может быть пустым")
-        if self.temperature_coefficient_c_per_v == 0:
-            raise ValueError("Коэффициент температуры не может быть равен нулю")
-        if self.flow_coefficient_l_min_per_v == 0:
-            raise ValueError("Коэффициент расхода не может быть равен нулю")
+        if self.water_liters_per_pulse is not None and self.water_liters_per_pulse <= 0:
+            raise ValueError("Объем воды на импульс должен быть больше нуля")
+        if (
+            self.fuel_flow_coefficient_l_min_per_v is not None
+            and self.fuel_flow_coefficient_l_min_per_v == 0
+        ):
+            raise ValueError("Коэффициент расхода топлива не может быть равен нулю")
         if self.density_kg_m3 <= 0:
             raise ValueError("Плотность должна быть больше нуля")
         if self.heat_capacity_j_kg_c <= 0:
@@ -76,4 +78,3 @@ class OscilloscopeData:
 class RegimeResult:
     base: dict[str, object]
     gas_statistics: dict[str, tuple[float, float, int]]
-
