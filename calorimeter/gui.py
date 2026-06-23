@@ -26,6 +26,22 @@ def _format_editor_time(value: datetime) -> str:
     return value.strftime("%H:%M")
 
 
+def end_time_options_after_start(available_times: list[str], start_value: str) -> list[str]:
+    try:
+        start_time = datetime.strptime(start_value.strip(), "%H:%M").time()
+    except ValueError:
+        return list(available_times)
+    result: list[str] = []
+    for value in available_times:
+        try:
+            end_time = datetime.strptime(value, "%H:%M").time()
+        except ValueError:
+            continue
+        if end_time > start_time:
+            result.append(value)
+    return result
+
+
 def _format_time(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -39,6 +55,7 @@ class CalorimeterApp(ttk.Frame):
         self.water_flow_data: OscilloscopeData | None = None
         self.fuel_flow_data: OscilloscopeData | None = None
         self.regimes: list[Regime] = []
+        self.available_minutes: list[str] = []
 
         self.gas_path = tk.StringVar()
         self.temperature_path = tk.StringVar()
@@ -162,7 +179,7 @@ class CalorimeterApp(ttk.Frame):
             editor,
             text=(
                 "Выберите начало в формате ЧЧ:ММ из XLSX; конец автоматически "
-                "ставится через 2 минуты, его можно изменить вручную."
+                "ставится через 2 минуты. В списке конца остаются только времена позже начала."
             ),
             foreground="#555555",
         ).grid(row=1, column=0, columnspan=9, sticky="w", pady=(7, 0))
@@ -278,9 +295,9 @@ class CalorimeterApp(ttk.Frame):
         self.temperature_data = temperature
         self.water_flow_data = water_flow
         self.fuel_flow_data = fuel_flow
-        available_minutes = sorted({timestamp.strftime("%H:%M") for timestamp in gas.timestamps})
-        self.start_time_combo.configure(values=available_minutes)
-        self.end_time_combo.configure(values=available_minutes)
+        self.available_minutes = sorted({timestamp.strftime("%H:%M") for timestamp in gas.timestamps})
+        self.start_time_combo.configure(values=self.available_minutes)
+        self.end_time_combo.configure(values=self.available_minutes)
         self.regime_start.set("")
         self.regime_end.set("")
         range_label = "Общий диапазон загруженных файлов" if any(
@@ -381,6 +398,7 @@ class CalorimeterApp(ttk.Frame):
         regime = self.regimes[index]
         self.regime_name.set(regime.name)
         self.regime_start.set(_format_editor_time(regime.start))
+        self._refresh_end_time_options(regime.start)
         self.regime_end.set(_format_editor_time(regime.end))
 
     def _on_start_time_selected(self, _event: tk.Event[tk.Misc]) -> None:
@@ -390,11 +408,22 @@ class CalorimeterApp(ttk.Frame):
             start = parse_user_time(self.regime_start.get(), self.gas_data.start.date())
         except ValueError:
             return
-        self.regime_end.set(_format_editor_time(start + timedelta(minutes=2)))
+        options = self._refresh_end_time_options(start)
+        auto_end = _format_editor_time(start + timedelta(minutes=2))
+        self.regime_end.set(auto_end if auto_end in options else (options[0] if options else ""))
+
+    def _refresh_end_time_options(self, start: datetime | None = None) -> list[str]:
+        if start is None:
+            options = list(self.available_minutes)
+        else:
+            options = end_time_options_after_start(self.available_minutes, start.strftime("%H:%M"))
+        self.end_time_combo.configure(values=options)
+        return options
 
     def _clear_regime_editor(self, keep_name: bool = False) -> None:
         if not keep_name:
             self.regime_name.set("")
+        self._refresh_end_time_options()
         self.regime_start.set("")
         self.regime_end.set("")
 

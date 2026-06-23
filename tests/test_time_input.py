@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date, datetime
 
-from calorimeter.gui import parse_user_time
+from calorimeter.gui import end_time_options_after_start, parse_user_time
 from calorimeter.models import GasData
 from calorimeter.processing import gas_contains_minute
 
@@ -30,6 +30,11 @@ class TimeInputTests(unittest.TestCase):
         self.assertTrue(gas_contains_minute(self.gas, datetime(2026, 6, 22, 13, 23)))
         self.assertTrue(gas_contains_minute(self.gas, datetime(2026, 6, 22, 13, 24)))
         self.assertFalse(gas_contains_minute(self.gas, datetime(2026, 6, 22, 13, 25)))
+
+    def test_end_time_options_are_later_than_start(self) -> None:
+        options = ["13:23", "13:24", "13:25", "13:26"]
+        self.assertEqual(["13:25", "13:26"], end_time_options_after_start(options, "13:24"))
+        self.assertEqual([], end_time_options_after_start(options, "13:26"))
 
 
 if __name__ == "__main__":
