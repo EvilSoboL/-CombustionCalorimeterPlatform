@@ -149,11 +149,18 @@ def _regime_result(
         raw_out = temperature.channels[1][temp_left:temp_right]
         if not raw_in:
             raise ValueError(f"В режиме «{regime.name}» нет отсчетов температуры")
-        temperatures_in = [type_k_voltage_to_celsius(value) for value in raw_in]
-        temperatures_out = [type_k_voltage_to_celsius(value) for value in raw_out]
+        temperatures_in = [
+            type_k_voltage_to_celsius(value, settings.cold_junction_temperature_c)
+            for value in raw_in
+        ]
+        temperatures_out = [
+            type_k_voltage_to_celsius(value, settings.cold_junction_temperature_c)
+            for value in raw_out
+        ]
         base.update(
             {
                 "Отсчетов температуры": len(raw_in),
+                "Температура свободных концов термопары, °C": settings.cold_junction_temperature_c,
                 "Температура входа, среднее, °C": statistics.fmean(temperatures_in),
                 "Температура выхода, среднее, °C": statistics.fmean(temperatures_out),
             }
@@ -214,8 +221,12 @@ def _regime_result(
         for timestamp in integration_times:
             voltage_in = _interpolate(temperature.timestamps, temperature.channels[0], timestamp)
             voltage_out = _interpolate(temperature.timestamps, temperature.channels[1], timestamp)
-            temperature_in = type_k_voltage_to_celsius(voltage_in)
-            temperature_out = type_k_voltage_to_celsius(voltage_out)
+            temperature_in = type_k_voltage_to_celsius(
+                voltage_in, settings.cold_junction_temperature_c
+            )
+            temperature_out = type_k_voltage_to_celsius(
+                voltage_out, settings.cold_junction_temperature_c
+            )
             volume_flow_m3_s = water_flow_l_min / 60_000.0
             powers.append(
                 settings.density_kg_m3

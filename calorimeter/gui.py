@@ -42,6 +42,7 @@ class CalorimeterApp(ttk.Frame):
         self.water_liters_per_pulse = tk.StringVar()
         self.fuel_flow_coefficient = tk.StringVar()
         self.fuel_flow_zero = tk.StringVar(value="0")
+        self.cold_junction_temperature = tk.StringVar(value="25")
         self.density = tk.StringVar(value="1000")
         self.heat_capacity = tk.StringVar(value="4184")
         self.regime_name = tk.StringVar()
@@ -109,10 +110,13 @@ class CalorimeterApp(ttk.Frame):
         self._entry(settings, 1, 0, "Нулевой сигнал топлива, В", self.fuel_flow_zero)
         self._entry(settings, 1, 2, "Плотность воды, кг/м³", self.density)
         self._entry(settings, 1, 4, "Теплоемкость воды, Дж/(кг·°C)", self.heat_capacity)
+        self._entry(settings, 2, 0, "Свободные концы термопары, °C", self.cold_junction_temperature)
         ttk.Label(
             settings,
             text=(
                 "TXT-файлы и их коэффициенты необязательны: без них CSV будет содержать только XLSX. "
+                "Температура ТХА(K) считается по ГОСТ Р 8.585-2001; свободные концы — температура клемм/холодного спая. "
+                "Если модуль уже скомпенсировал холодный спай к 0 °C, поставьте 0. "
                 "Вода, л/импульс — паспортный объем за один импульс расходомера; если указан K в имп/л, введите 1/K. "
                 "Топливо, л/(мин·В) — сколько л/мин дает 1 В сверх нуля. "
                 "Нулевой сигнал топлива — напряжение датчика при нулевом расходе, оно вычитается из U. "
@@ -121,7 +125,7 @@ class CalorimeterApp(ttk.Frame):
             foreground="#555555",
             wraplength=1040,
             justify="left",
-        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(7, 0))
+        ).grid(row=3, column=0, columnspan=6, sticky="w", pady=(7, 0))
 
         regimes_frame = ttk.LabelFrame(self, text="3. Стационарные режимы", padding=10)
         regimes_frame.grid(row=2, column=0, sticky="nsew")
@@ -389,6 +393,9 @@ class CalorimeterApp(ttk.Frame):
 
     def _settings(self) -> ProcessingSettings:
         fuel_zero = self._optional_number(self.fuel_flow_zero.get(), "Нулевой сигнал топлива")
+        cold_junction = self._optional_number(
+            self.cold_junction_temperature.get(), "Свободные концы термопары"
+        )
         density = self._optional_number(self.density.get(), "Плотность")
         heat_capacity = self._optional_number(self.heat_capacity.get(), "Теплоемкость")
         return ProcessingSettings(
@@ -400,6 +407,7 @@ class CalorimeterApp(ttk.Frame):
                 self.fuel_flow_coefficient.get(), "Топливо, л/(мин·В)"
             ),
             fuel_flow_zero_v=0.0 if fuel_zero is None else fuel_zero,
+            cold_junction_temperature_c=25.0 if cold_junction is None else cold_junction,
             density_kg_m3=1000.0 if density is None else density,
             heat_capacity_j_kg_c=4184.0 if heat_capacity is None else heat_capacity,
         )

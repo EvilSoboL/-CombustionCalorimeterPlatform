@@ -42,6 +42,7 @@ class ProcessingTests(unittest.TestCase):
             "experiment",
             water_liters_per_pulse=1.0,
             fuel_flow_coefficient_l_min_per_v=2.0,
+            cold_junction_temperature_c=0.0,
             density_kg_m3=1000.0,
             heat_capacity_j_kg_c=1000.0,
         )
@@ -57,6 +58,7 @@ class ProcessingTests(unittest.TestCase):
         )[0]
         expected_out = type_k_voltage_to_celsius(0.004095)
         self.assertEqual((3.0, 1.5811388300841898, 5), result.gas_statistics["% O2"])
+        self.assertEqual(0.0, result.base["Температура свободных концов термопары, °C"])
         self.assertAlmostEqual(0.0, result.base["Температура входа, среднее, °C"])
         self.assertAlmostEqual(expected_out, result.base["Температура выхода, среднее, °C"])
         self.assertEqual(2, result.base["Импульсов расхода воды"])

@@ -23,6 +23,7 @@ class ProcessingSettings:
     water_liters_per_pulse: float | None = None
     fuel_flow_coefficient_l_min_per_v: float | None = None
     fuel_flow_zero_v: float = 0.0
+    cold_junction_temperature_c: float = 25.0
     density_kg_m3: float = 1000.0
     heat_capacity_j_kg_c: float = 4184.0
 
@@ -36,6 +37,8 @@ class ProcessingSettings:
             and self.fuel_flow_coefficient_l_min_per_v == 0
         ):
             raise ValueError("Коэффициент расхода топлива не может быть равен нулю")
+        if not -270.0 <= self.cold_junction_temperature_c <= 1372.0:
+            raise ValueError("Температура свободных концов термопары вне диапазона ГОСТ")
         if self.density_kg_m3 <= 0:
             raise ValueError("Плотность должна быть больше нуля")
         if self.heat_capacity_j_kg_c <= 0:
