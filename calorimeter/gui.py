@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import tkinter as tk
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -18,6 +18,12 @@ def parse_user_time(value: str, reference_date: date) -> datetime:
     except ValueError as exc:
         raise ValueError("Выберите время в формате ЧЧ:ММ") from exc
     return datetime.combine(reference_date, parsed)
+
+
+def _format_editor_time(value: datetime) -> str:
+    if value.second or value.microsecond:
+        return value.strftime("%H:%M:%S")
+    return value.strftime("%H:%M")
 
 
 def _format_time(value: datetime) -> str:
@@ -143,6 +149,7 @@ class CalorimeterApp(ttk.Frame):
             editor, textvariable=self.regime_start, width=8, state="readonly"
         )
         self.start_time_combo.grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=3)
+        self.start_time_combo.bind("<<ComboboxSelected>>", self._on_start_time_selected)
         ttk.Label(editor, text="Конец").grid(row=0, column=4, sticky="w", padx=(0, 6), pady=3)
         self.end_time_combo = ttk.Combobox(
             editor, textvariable=self.regime_end, width=8, state="readonly"
@@ -153,7 +160,10 @@ class CalorimeterApp(ttk.Frame):
         ttk.Button(editor, text="Удалить", command=self._delete_regime).grid(row=0, column=8, padx=(3, 0))
         ttk.Label(
             editor,
-            text="Выберите начало и конец в формате ЧЧ:ММ из времени, найденного в XLSX.",
+            text=(
+                "Выберите начало в формате ЧЧ:ММ из XLSX; конец автоматически "
+                "ставится через 2 минуты, его можно изменить вручную."
+            ),
             foreground="#555555",
         ).grid(row=1, column=0, columnspan=9, sticky="w", pady=(7, 0))
 
@@ -322,7 +332,7 @@ class CalorimeterApp(ttk.Frame):
         self.regimes.append(regime)
         self.regimes.sort(key=lambda item: item.start)
         self._refresh_regimes()
-        self._clear_regime_editor()
+        self._clear_regime_editor(keep_name=True)
 
     def _selected_index(self) -> int | None:
         selected = self.regime_table.selection()
@@ -370,11 +380,21 @@ class CalorimeterApp(ttk.Frame):
             return
         regime = self.regimes[index]
         self.regime_name.set(regime.name)
-        self.regime_start.set(regime.start.strftime("%H:%M"))
-        self.regime_end.set(regime.end.strftime("%H:%M"))
+        self.regime_start.set(_format_editor_time(regime.start))
+        self.regime_end.set(_format_editor_time(regime.end))
 
-    def _clear_regime_editor(self) -> None:
-        self.regime_name.set("")
+    def _on_start_time_selected(self, _event: tk.Event[tk.Misc]) -> None:
+        if self.gas_data is None:
+            return
+        try:
+            start = parse_user_time(self.regime_start.get(), self.gas_data.start.date())
+        except ValueError:
+            return
+        self.regime_end.set(_format_editor_time(start + timedelta(minutes=2)))
+
+    def _clear_regime_editor(self, keep_name: bool = False) -> None:
+        if not keep_name:
+            self.regime_name.set("")
         self.regime_start.set("")
         self.regime_end.set("")
 
