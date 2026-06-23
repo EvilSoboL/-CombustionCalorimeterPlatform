@@ -21,8 +21,6 @@ class Regime:
 class ProcessingSettings:
     experiment_name: str
     water_liters_per_pulse: float | None = None
-    fuel_flow_coefficient_l_min_per_v: float | None = None
-    fuel_flow_zero_v: float = 0.0
     cold_junction_temperature_c: float = 25.0
     density_kg_m3: float = 1000.0
     heat_capacity_j_kg_c: float = 4184.0
@@ -32,11 +30,6 @@ class ProcessingSettings:
             raise ValueError("Название эксперимента не может быть пустым")
         if self.water_liters_per_pulse is not None and self.water_liters_per_pulse <= 0:
             raise ValueError("Объем воды на импульс должен быть больше нуля")
-        if (
-            self.fuel_flow_coefficient_l_min_per_v is not None
-            and self.fuel_flow_coefficient_l_min_per_v == 0
-        ):
-            raise ValueError("Коэффициент расхода топлива не может быть равен нулю")
         if not -270.0 <= self.cold_junction_temperature_c <= 1372.0:
             raise ValueError("Температура свободных концов термопары вне диапазона ГОСТ")
         if self.density_kg_m3 <= 0:
@@ -78,6 +71,22 @@ class OscilloscopeData:
 
 
 @dataclass
+class PlcData:
+    timestamps: list[datetime]
+    columns: dict[str, list[float | None]]
+    source_name: str
+
+    @property
+    def start(self) -> datetime:
+        return self.timestamps[0]
+
+    @property
+    def end(self) -> datetime:
+        return self.timestamps[-1]
+
+
+@dataclass
 class RegimeResult:
     base: dict[str, object]
     gas_statistics: dict[str, tuple[float, float, int]]
+    plc_statistics: dict[str, tuple[float, float, int]]

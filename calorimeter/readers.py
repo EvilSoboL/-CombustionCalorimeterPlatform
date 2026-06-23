@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import csv
 import re
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from .models import GasData, OscilloscopeData
+from .models import GasData, OscilloscopeData, PlcData
 
 
 _NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -232,5 +233,100 @@ def read_oscilloscope_txt(path: str | Path, expected_channels: int) -> Oscillosc
         elapsed_seconds=elapsed,
         channels=channels,
         experiment_start=experiment_start,
+        source_name=source.name,
+    )
+
+
+def _open_text_with_known_encoding(source: Path) -> tuple[str, str]:
+    try:
+        with source.open("rb") as probe:
+            sample = probe.read(8192)
+        try:
+            sample.decode("utf-8-sig")
+            encoding = "utf-8-sig"
+        except UnicodeDecodeError:
+            sample.decode("cp1251")
+            encoding = "cp1251"
+        return source.read_text(encoding=encoding), encoding
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"Не удалось открыть CSV {source.name}: {exc}") from exc
+
+
+def _plc_timestamp(row: dict[str, str], row_number: int) -> datetime:
+    created_at = row.get("created_at", "").strip().strip('"')
+    candidates = []
+    if created_at:
+        candidates.append(created_at)
+    event_date = row.get("event_date", "").strip()
+    event_time = row.get("event_time", "").strip()
+    if event_date and event_time:
+        candidates.append(f"{event_date} {event_time}")
+    formats = (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M:%S.%f",
+    )
+    for candidate in candidates:
+        for fmt in formats:
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                pass
+    raise ValueError(f"Строка CSV ПЛК {row_number}: не удалось распознать дату и время")
+
+
+def _optional_float(value: str) -> float | None:
+    text = value.strip().strip('"')
+    if not text:
+        return None
+    try:
+        return float(text.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def read_plc_csv(path: str | Path) -> PlcData:
+    source = Path(path)
+    if source.suffix.lower() != ".csv":
+        raise ValueError("Файл ПЛК должен иметь расширение .csv")
+    text, _encoding = _open_text_with_known_encoding(source)
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=";,")
+        reader = csv.DictReader(text.splitlines(), dialect=dialect)
+    except csv.Error:
+        reader = csv.DictReader(text.splitlines(), delimiter=";")
+    if not reader.fieldnames:
+        raise ValueError("CSV ПЛК не содержит заголовков")
+
+    service_columns = {"id", "event_date", "event_time", "created_at"}
+    data_columns = [
+        name.strip()
+        for name in reader.fieldnames
+        if name and name.strip() and name.strip() not in service_columns
+    ]
+    if not data_columns:
+        raise ValueError("CSV ПЛК не содержит колонок измерений")
+
+    timestamps: list[datetime] = []
+    raw_columns: dict[str, list[float | None]] = {name: [] for name in data_columns}
+    for row_number, row in enumerate(reader, start=2):
+        normalized = {(key or "").strip(): value or "" for key, value in row.items()}
+        timestamps.append(_plc_timestamp(normalized, row_number))
+        for name in data_columns:
+            raw_columns[name].append(_optional_float(normalized.get(name, "")))
+
+    if not timestamps:
+        raise ValueError("CSV ПЛК не содержит строк данных")
+    numeric_columns = {
+        name: values for name, values in raw_columns.items() if any(value is not None for value in values)
+    }
+    if not numeric_columns:
+        raise ValueError("CSV ПЛК не содержит числовых колонок измерений")
+
+    order = sorted(range(len(timestamps)), key=timestamps.__getitem__)
+    return PlcData(
+        timestamps=[timestamps[index] for index in order],
+        columns={name: [values[index] for index in order] for name, values in numeric_columns.items()},
         source_name=source.name,
     )

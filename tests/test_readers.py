@@ -5,7 +5,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from calorimeter.readers import read_gas_xlsx, read_oscilloscope_txt
+from calorimeter.readers import read_gas_xlsx, read_oscilloscope_txt, read_plc_csv
 
 
 class ReaderTests(unittest.TestCase):
@@ -39,6 +39,22 @@ Data as Time Sequence:
         self.assertEqual([20.0, 19.0], data.columns["% O2"])
         self.assertNotIn("сек", data.columns)
         self.assertEqual("2026-06-22 13:24:00", str(data.start))
+
+    def test_plc_csv_is_sorted_and_numeric_columns_are_read(self) -> None:
+        content = """id;event_date;event_time;reqTemp;Temp2;Air;created_at
+2;2026-06-23;13:30:15;250;;2.5;"2026-06-23 13:30:15"
+1;2026-06-23;13:30:00;240;10,5;1.5;"2026-06-23 13:30:00"
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plc.csv"
+            path.write_text(content, encoding="utf-8")
+            data = read_plc_csv(path)
+
+        self.assertEqual("plc.csv", data.source_name)
+        self.assertEqual("2026-06-23 13:30:00", str(data.start))
+        self.assertEqual([240.0, 250.0], data.columns["reqTemp"])
+        self.assertEqual([10.5, None], data.columns["Temp2"])
+        self.assertNotIn("id", data.columns)
 
     @staticmethod
     def _write_minimal_xlsx(path: Path) -> None:

@@ -7,7 +7,7 @@ from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .models import GasData, OscilloscopeData, ProcessingSettings, Regime, RegimeResult
+from .models import GasData, OscilloscopeData, PlcData, ProcessingSettings, Regime, RegimeResult
 from .thermocouple import type_k_voltage_to_celsius
 
 
@@ -15,9 +15,9 @@ def common_time_range(
     gas: GasData,
     temperature: OscilloscopeData | None = None,
     water_flow: OscilloscopeData | None = None,
-    fuel_flow: OscilloscopeData | None = None,
+    plc_data: PlcData | None = None,
 ) -> tuple[datetime, datetime]:
-    sources = [gas, *(item for item in (temperature, water_flow, fuel_flow) if item is not None)]
+    sources = [gas, *(item for item in (temperature, water_flow, plc_data) if item is not None)]
     return (
         max(source.start for source in sources),
         min(source.end for source in sources),
@@ -37,11 +37,11 @@ def validate_regimes(
     gas: GasData,
     temperature: OscilloscopeData | None = None,
     water_flow: OscilloscopeData | None = None,
-    fuel_flow: OscilloscopeData | None = None,
+    plc_data: PlcData | None = None,
 ) -> None:
     if not regimes:
         raise ValueError("Добавьте хотя бы один режим")
-    common_start, common_end = common_time_range(gas, temperature, water_flow, fuel_flow)
+    common_start, common_end = common_time_range(gas, temperature, water_flow, plc_data)
     if common_start >= common_end:
         raise ValueError("Временные диапазоны загруженных файлов не пересекаются")
     names: set[str] = set()
@@ -118,7 +118,7 @@ def _regime_result(
     gas: GasData,
     temperature: OscilloscopeData | None,
     water_flow: OscilloscopeData | None,
-    fuel_flow: OscilloscopeData | None,
+    plc_data: PlcData | None,
     water_pulses: list[datetime] | None,
     settings: ProcessingSettings,
 ) -> RegimeResult:
@@ -130,6 +130,7 @@ def _regime_result(
     for name, values in gas.columns.items():
         selected = [value for value in values[gas_left:gas_right] if value is not None]
         gas_statistics[name] = _sample_statistics(selected)
+    plc_statistics: dict[str, tuple[float, float, int]] = {}
 
     duration_seconds = (regime.end - regime.start).total_seconds()
     base: dict[str, object] = {
@@ -188,29 +189,15 @@ def _regime_result(
             }
         )
 
-    if fuel_flow is not None:
-        if settings.fuel_flow_coefficient_l_min_per_v is None:
-            raise ValueError("Для расчета расхода топлива укажите «Топливо, л/(мин·В)»")
-        fuel_left = bisect_left(fuel_flow.timestamps, regime.start)
-        fuel_right = bisect_right(fuel_flow.timestamps, regime.end)
-        raw_fuel = fuel_flow.channels[0][fuel_left:fuel_right]
-        if not raw_fuel:
-            raise ValueError(f"В режиме «{regime.name}» нет отсчетов расхода топлива")
-        fuel_values = [
-            max(
-                0.0,
-                (value - settings.fuel_flow_zero_v)
-                * settings.fuel_flow_coefficient_l_min_per_v,
-            )
-            for value in raw_fuel
-        ]
-        base.update(
-            {
-                "Отсчетов расхода топлива": len(raw_fuel),
-                "Расход топлива, среднее, л/мин": statistics.fmean(fuel_values),
-                "Сигнал расхода топлива, среднее, В": statistics.fmean(raw_fuel),
-            }
-        )
+    if plc_data is not None:
+        plc_left = bisect_left(plc_data.timestamps, regime.start)
+        plc_right = bisect_right(plc_data.timestamps, regime.end)
+        if plc_left == plc_right:
+            raise ValueError(f"В режиме «{regime.name}» нет отсчетов ПЛК")
+        base["Отсчетов ПЛК"] = plc_right - plc_left
+        for name, values in plc_data.columns.items():
+            selected = [value for value in values[plc_left:plc_right] if value is not None]
+            plc_statistics[name] = _sample_statistics(selected)
 
     if temperature is not None and water_flow_l_min is not None:
         internal_times = temperature.timestamps[temp_left:temp_right]
@@ -244,14 +231,14 @@ def _regime_result(
                 "Количество тепла, кДж": heat_j / 1000.0,
             }
         )
-    return RegimeResult(base=base, gas_statistics=gas_statistics)
+    return RegimeResult(base=base, gas_statistics=gas_statistics, plc_statistics=plc_statistics)
 
 
 def process_experiment(
     gas: GasData,
     temperature: OscilloscopeData | None,
     water_flow: OscilloscopeData | None,
-    fuel_flow: OscilloscopeData | None,
+    plc_data: PlcData | None,
     regimes: list[Regime],
     settings: ProcessingSettings,
 ) -> list[RegimeResult]:
@@ -259,13 +246,9 @@ def process_experiment(
         raise ValueError("Файл температуры должен содержать два канала")
     if water_flow is not None and not water_flow.channels:
         raise ValueError("Файл расхода воды должен содержать один канал")
-    if fuel_flow is not None and not fuel_flow.channels:
-        raise ValueError("Файл расхода топлива должен содержать один канал")
     if water_flow is not None and settings.water_liters_per_pulse is None:
         raise ValueError("Для расчета расхода воды укажите «Вода, л/импульс»")
-    if fuel_flow is not None and settings.fuel_flow_coefficient_l_min_per_v is None:
-        raise ValueError("Для расчета расхода топлива укажите «Топливо, л/(мин·В)»")
-    validate_regimes(regimes, gas, temperature, water_flow, fuel_flow)
+    validate_regimes(regimes, gas, temperature, water_flow, plc_data)
     water_pulses = None
     if water_flow is not None:
         water_pulses, _, _ = detect_water_pulses(water_flow)
@@ -275,7 +258,7 @@ def process_experiment(
             gas,
             temperature,
             water_flow,
-            fuel_flow,
+            plc_data,
             water_pulses,
             settings,
         )
@@ -291,10 +274,17 @@ def export_csv(path: str | Path, results: list[RegimeResult]) -> None:
         for name in result.gas_statistics:
             if name not in gas_columns:
                 gas_columns.append(name)
+    plc_columns: list[str] = []
+    for result in results:
+        for name in result.plc_statistics:
+            if name not in plc_columns:
+                plc_columns.append(name)
     base_columns = list(results[0].base)
     fieldnames = base_columns.copy()
     for name in gas_columns:
         fieldnames.extend((f"{name}, среднее", f"{name}, СКО", f"{name}, N"))
+    for name in plc_columns:
+        fieldnames.extend((f"ПЛК {name}, среднее", f"ПЛК {name}, СКО", f"ПЛК {name}, N"))
 
     try:
         handle = Path(path).open("w", encoding="utf-8-sig", newline="")
@@ -310,4 +300,9 @@ def export_csv(path: str | Path, results: list[RegimeResult]) -> None:
                 row[f"{name}, среднее"] = mean
                 row[f"{name}, СКО"] = deviation
                 row[f"{name}, N"] = count
+            for name in plc_columns:
+                mean, deviation, count = result.plc_statistics.get(name, (math.nan, math.nan, 0))
+                row[f"ПЛК {name}, среднее"] = mean
+                row[f"ПЛК {name}, СКО"] = deviation
+                row[f"ПЛК {name}, N"] = count
             writer.writerow(row)

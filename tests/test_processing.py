@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from calorimeter.models import GasData, OscilloscopeData, ProcessingSettings, Regime
+from calorimeter.models import GasData, OscilloscopeData, PlcData, ProcessingSettings, Regime
 from calorimeter.processing import detect_water_pulses, export_csv, process_experiment
 from calorimeter.thermocouple import type_k_voltage_to_celsius
 
@@ -30,18 +30,18 @@ class ProcessingTests(unittest.TestCase):
             start,
             "water.txt",
         )
-        self.fuel_flow = OscilloscopeData(
+        self.plc = PlcData(
             times,
-            [0.0, 1.0, 2.0, 3.0, 4.0],
-            [[1.0] * 5],
-            start,
-            "fuel.txt",
+            {
+                "Air": [1.0, 2.0, 3.0, 4.0, 5.0],
+                "FMass": [0.0, None, 2.0, 4.0, 6.0],
+            },
+            "plc.csv",
         )
         self.regime = Regime("steady", start, start + timedelta(seconds=4))
         self.settings = ProcessingSettings(
             "experiment",
             water_liters_per_pulse=1.0,
-            fuel_flow_coefficient_l_min_per_v=2.0,
             cold_junction_temperature_c=0.0,
             density_kg_m3=1000.0,
             heat_capacity_j_kg_c=1000.0,
@@ -52,7 +52,7 @@ class ProcessingTests(unittest.TestCase):
             self.gas,
             self.temperature,
             self.water_flow,
-            self.fuel_flow,
+            self.plc,
             [self.regime],
             self.settings,
         )[0]
@@ -63,7 +63,9 @@ class ProcessingTests(unittest.TestCase):
         self.assertAlmostEqual(expected_out, result.base["Температура выхода, среднее, °C"])
         self.assertEqual(2, result.base["Импульсов расхода воды"])
         self.assertAlmostEqual(30.0, result.base["Расход воды, среднее, л/мин"])
-        self.assertAlmostEqual(2.0, result.base["Расход топлива, среднее, л/мин"])
+        self.assertEqual(5, result.base["Отсчетов ПЛК"])
+        self.assertEqual((3.0, 1.5811388300841898, 5), result.plc_statistics["Air"])
+        self.assertEqual((3.0, 2.581988897471611, 4), result.plc_statistics["FMass"])
         expected_power = 1000.0 * (30.0 / 60_000.0) * 1000.0 * expected_out
         self.assertAlmostEqual(expected_power, result.base["Средняя тепловая мощность, Вт"])
         self.assertAlmostEqual(expected_power * 4.0 / 1000.0, result.base["Количество тепла, кДж"])
@@ -82,9 +84,9 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual("gas-only", result.base["Название эксперимента"])
         self.assertNotIn("Температура входа, среднее, °C", result.base)
         self.assertNotIn("Расход воды, среднее, л/мин", result.base)
-        self.assertNotIn("Расход топлива, среднее, л/мин", result.base)
+        self.assertFalse(result.plc_statistics)
 
-    def test_optional_sensor_coefficients_are_required_only_when_file_is_loaded(self) -> None:
+    def test_water_factor_is_required_only_when_water_file_is_loaded(self) -> None:
         with self.assertRaisesRegex(ValueError, "Вода, л/импульс"):
             process_experiment(
                 self.gas,
@@ -93,15 +95,6 @@ class ProcessingTests(unittest.TestCase):
                 None,
                 [self.regime],
                 ProcessingSettings("missing-water-factor"),
-            )
-        with self.assertRaisesRegex(ValueError, "Топливо"):
-            process_experiment(
-                self.gas,
-                None,
-                None,
-                self.fuel_flow,
-                [self.regime],
-                ProcessingSettings("missing-fuel-factor"),
             )
 
     def test_water_pulses_are_rising_edges(self) -> None:
@@ -114,7 +107,7 @@ class ProcessingTests(unittest.TestCase):
             self.gas,
             self.temperature,
             self.water_flow,
-            self.fuel_flow,
+            self.plc,
             [self.regime],
             self.settings,
         )
@@ -128,6 +121,8 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual("steady", rows[0]["Режим"])
         self.assertEqual("3.0", rows[0]["% O2, среднее"])
         self.assertEqual("2", rows[0]["Импульсов расхода воды"])
+        self.assertEqual("3.0", rows[0]["ПЛК Air, среднее"])
+        self.assertEqual("4", rows[0]["ПЛК FMass, N"])
 
     def test_regime_must_be_inside_all_sources(self) -> None:
         outside = Regime(
@@ -140,7 +135,7 @@ class ProcessingTests(unittest.TestCase):
                 self.gas,
                 self.temperature,
                 self.water_flow,
-                self.fuel_flow,
+                self.plc,
                 [outside],
                 self.settings,
             )

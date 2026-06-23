@@ -6,9 +6,9 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .models import GasData, OscilloscopeData, ProcessingSettings, Regime
+from .models import GasData, OscilloscopeData, PlcData, ProcessingSettings, Regime
 from .processing import common_time_range, export_csv, gas_contains_minute, process_experiment
-from .readers import read_gas_xlsx, read_oscilloscope_txt
+from .readers import read_gas_xlsx, read_oscilloscope_txt, read_plc_csv
 
 
 def parse_user_time(value: str, reference_date: date) -> datetime:
@@ -53,18 +53,16 @@ class CalorimeterApp(ttk.Frame):
         self.gas_data: GasData | None = None
         self.temperature_data: OscilloscopeData | None = None
         self.water_flow_data: OscilloscopeData | None = None
-        self.fuel_flow_data: OscilloscopeData | None = None
+        self.plc_data: PlcData | None = None
         self.regimes: list[Regime] = []
         self.available_minutes: list[str] = []
 
         self.gas_path = tk.StringVar()
         self.temperature_path = tk.StringVar()
         self.water_flow_path = tk.StringVar()
-        self.fuel_flow_path = tk.StringVar()
+        self.plc_path = tk.StringVar()
         self.experiment_name = tk.StringVar()
         self.water_liters_per_pulse = tk.StringVar()
-        self.fuel_flow_coefficient = tk.StringVar()
-        self.fuel_flow_zero = tk.StringVar(value="0")
         self.cold_junction_temperature = tk.StringVar(value="25")
         self.density = tk.StringVar(value="1000")
         self.heat_capacity = tk.StringVar(value="4184")
@@ -112,9 +110,9 @@ class CalorimeterApp(ttk.Frame):
         self._file_row(
             sources,
             3,
-            "Расход топлива TXT (опционально, 1 канал)",
-            self.fuel_flow_path,
-            (("TXT", "*.txt"),),
+            "ПЛК CSV (опционально)",
+            self.plc_path,
+            (("CSV", "*.csv"),),
         )
         ttk.Button(sources, text="Загрузить и проверить", command=self._load_sources).grid(
             row=4, column=2, sticky="e", pady=(8, 0)
@@ -129,20 +127,17 @@ class CalorimeterApp(ttk.Frame):
             settings.columnconfigure(column, weight=1)
         self._entry(settings, 0, 0, "Название эксперимента", self.experiment_name, width=24)
         self._entry(settings, 0, 2, "Вода, л/импульс", self.water_liters_per_pulse)
-        self._entry(settings, 0, 4, "Топливо, л/(мин·В)", self.fuel_flow_coefficient)
-        self._entry(settings, 1, 0, "Нулевой сигнал топлива, В", self.fuel_flow_zero)
-        self._entry(settings, 1, 2, "Плотность воды, кг/м³", self.density)
-        self._entry(settings, 1, 4, "Теплоемкость воды, Дж/(кг·°C)", self.heat_capacity)
-        self._entry(settings, 2, 0, "Свободные концы термопары, °C", self.cold_junction_temperature)
+        self._entry(settings, 0, 4, "Свободные концы термопары, °C", self.cold_junction_temperature)
+        self._entry(settings, 1, 0, "Плотность воды, кг/м³", self.density)
+        self._entry(settings, 1, 2, "Теплоемкость воды, Дж/(кг·°C)", self.heat_capacity)
         ttk.Label(
             settings,
             text=(
-                "TXT-файлы и их коэффициенты необязательны: без них CSV будет содержать только XLSX. "
+                "Дополнительные TXT/CSV-файлы необязательны: без них CSV будет содержать только XLSX. "
+                "CSV ПЛК усредняется по тем же режимам, что и газоанализатор. "
                 "Температура ТХА(K) считается по ГОСТ Р 8.585-2001; свободные концы — температура клемм/холодного спая. "
                 "Если модуль уже скомпенсировал холодный спай к 0 °C, поставьте 0. "
                 "Вода, л/импульс — паспортный объем за один импульс расходомера; если указан K в имп/л, введите 1/K. "
-                "Топливо, л/(мин·В) — сколько л/мин дает 1 В сверх нуля. "
-                "Нулевой сигнал топлива — напряжение датчика при нулевом расходе, оно вычитается из U. "
                 "Плотность и теплоемкость нужны только для расчета тепла."
             ),
             foreground="#555555",
@@ -258,7 +253,7 @@ class CalorimeterApp(ttk.Frame):
         gas_path = self.gas_path.get().strip()
         temperature_path = self.temperature_path.get().strip()
         water_flow_path = self.water_flow_path.get().strip()
-        fuel_flow_path = self.fuel_flow_path.get().strip()
+        plc_path = self.plc_path.get().strip()
         if not gas_path:
             messagebox.showerror(
                 "Не выбран XLSX",
@@ -279,12 +274,8 @@ class CalorimeterApp(ttk.Frame):
                 if water_flow_path
                 else None
             )
-            fuel_flow = (
-                read_oscilloscope_txt(fuel_flow_path, expected_channels=1)
-                if fuel_flow_path
-                else None
-            )
-            start, end = common_time_range(gas, temperature, water_flow, fuel_flow)
+            plc_data = read_plc_csv(plc_path) if plc_path else None
+            start, end = common_time_range(gas, temperature, water_flow, plc_data)
             if start >= end:
                 raise ValueError("У загруженных файлов нет общего временного диапазона")
         except Exception as exc:
@@ -294,14 +285,14 @@ class CalorimeterApp(ttk.Frame):
         self.gas_data = gas
         self.temperature_data = temperature
         self.water_flow_data = water_flow
-        self.fuel_flow_data = fuel_flow
+        self.plc_data = plc_data
         self.available_minutes = sorted({timestamp.strftime("%H:%M") for timestamp in gas.timestamps})
         self.start_time_combo.configure(values=self.available_minutes)
         self.end_time_combo.configure(values=self.available_minutes)
         self.regime_start.set("")
         self.regime_end.set("")
         range_label = "Общий диапазон загруженных файлов" if any(
-            (temperature, water_flow, fuel_flow)
+            (temperature, water_flow, plc_data)
         ) else "Диапазон XLSX"
         self.source_summary.set(
             f"{range_label}: {_format_time(start)} — {_format_time(end)}; "
@@ -312,8 +303,8 @@ class CalorimeterApp(ttk.Frame):
             loaded.append(f"температура {len(temperature.timestamps)}")
         if water_flow is not None:
             loaded.append(f"вода {len(water_flow.timestamps)}")
-        if fuel_flow is not None:
-            loaded.append(f"топливо {len(fuel_flow.timestamps)}")
+        if plc_data is not None:
+            loaded.append(f"ПЛК {len(plc_data.timestamps)}")
         self.status.set("Загружено: " + ", ".join(loaded))
         if not self.experiment_name.get().strip():
             self.experiment_name.set(Path(gas_path).stem)
@@ -441,7 +432,6 @@ class CalorimeterApp(ttk.Frame):
         return CalorimeterApp._number(value, name)
 
     def _settings(self) -> ProcessingSettings:
-        fuel_zero = self._optional_number(self.fuel_flow_zero.get(), "Нулевой сигнал топлива")
         cold_junction = self._optional_number(
             self.cold_junction_temperature.get(), "Свободные концы термопары"
         )
@@ -452,10 +442,6 @@ class CalorimeterApp(ttk.Frame):
             water_liters_per_pulse=self._optional_number(
                 self.water_liters_per_pulse.get(), "Вода, л/импульс"
             ),
-            fuel_flow_coefficient_l_min_per_v=self._optional_number(
-                self.fuel_flow_coefficient.get(), "Топливо, л/(мин·В)"
-            ),
-            fuel_flow_zero_v=0.0 if fuel_zero is None else fuel_zero,
             cold_junction_temperature_c=25.0 if cold_junction is None else cold_junction,
             density_kg_m3=1000.0 if density is None else density,
             heat_capacity_j_kg_c=4184.0 if heat_capacity is None else heat_capacity,
@@ -471,7 +457,7 @@ class CalorimeterApp(ttk.Frame):
                 self.gas_data,
                 self.temperature_data,
                 self.water_flow_data,
-                self.fuel_flow_data,
+                self.plc_data,
                 self.regimes,
                 settings,
             )
