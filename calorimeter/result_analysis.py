@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import io
 import math
-import statistics
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,15 +14,17 @@ NO_CONVERSION_FACTOR = 2.056
 
 
 @dataclass(frozen=True)
-class ExperimentAnalysis:
+class RegimeAnalysis:
     experiment_name: str
-    regime_count: int
-    heat_kj_total: float
-    heat_kwh_total: float
-    o2_percent_mean: float
-    co_ppm_mean: float
-    no_ppm_mean: float
-    no2_ppm_mean: float
+    regime_name: str
+    start_time: str
+    end_time: str
+    heat_kj: float
+    heat_kwh: float
+    o2_percent: float
+    co_ppm: float
+    no_ppm: float
+    no2_ppm: float
     co_mg_kwh: float
     no_mg_kwh: float
     no2_mg_kwh: float
@@ -31,13 +32,15 @@ class ExperimentAnalysis:
 
 ANALYSIS_FIELDNAMES = [
     "Название эксперимента",
-    "Режимов",
-    "Суммарное количество тепла, кДж",
-    "Суммарное количество тепла, кВт·ч",
-    "O2, среднее, %",
-    "CO, среднее, ppm",
-    "NO, среднее, ppm",
-    "NO2, среднее, ppm",
+    "Режим",
+    "Начало режима",
+    "Конец режима",
+    "Количество тепла, кДж",
+    "Количество тепла, кВт·ч",
+    "O2, %",
+    "CO, ppm",
+    "NO, ppm",
+    "NO2, ppm",
     "CO, мг/кВт·ч",
     "NO, мг/кВт·ч",
     "NO2, мг/кВт·ч",
@@ -47,15 +50,14 @@ ANALYSIS_FIELDNAMES = [
 @dataclass(frozen=True)
 class _ResultColumns:
     experiment: str
+    regime: str
+    start: str | None
+    end: str | None
     heat_kj: str
     o2_mean: str
-    o2_count: str | None
     co_mean: str
-    co_count: str | None
     no_mean: str
-    no_count: str | None
     no2_mean: str
-    no2_count: str | None
 
 
 def _normalize_header(value: str) -> str:
@@ -113,60 +115,34 @@ def _result_columns(fieldnames: list[str]) -> _ResultColumns:
     mapping = _header_map(fieldnames)
     return _ResultColumns(
         experiment=_require_column(mapping, ("Название эксперимента",), "Название эксперимента"),
+        regime=_require_column(mapping, ("Режим",), "Режим"),
+        start=_optional_column(mapping, ("Начало режима",)),
+        end=_optional_column(mapping, ("Конец режима",)),
         heat_kj=_require_column(mapping, ("Количество тепла, кДж",), "Количество тепла, кДж"),
         o2_mean=_require_column(mapping, ("% O2, среднее", "O2, среднее"), "% O2, среднее"),
-        o2_count=_optional_column(mapping, ("% O2, N", "O2, N")),
         co_mean=_require_column(
             mapping,
             ("ппм CO, среднее", "ppm CO, среднее", "CO, среднее"),
             "ппм CO, среднее",
         ),
-        co_count=_optional_column(mapping, ("ппм CO, N", "ppm CO, N", "CO, N")),
         no_mean=_require_column(
             mapping,
             ("ппм NO, среднее", "ppm NO, среднее", "NO, среднее"),
             "ппм NO, среднее",
         ),
-        no_count=_optional_column(mapping, ("ппм NO, N", "ppm NO, N", "NO, N")),
         no2_mean=_require_column(
             mapping,
             ("ппм NO2, среднее", "ppm NO2, среднее", "NO2, среднее"),
             "ппм NO2, среднее",
         ),
-        no2_count=_optional_column(mapping, ("ппм NO2, N", "ppm NO2, N", "NO2, N")),
     )
 
 
-def _sum_column(rows: list[dict[str, str]], column: str, description: str) -> float:
-    values = [_parse_float(row.get(column)) for row in rows]
-    numbers = [value for value in values if value is not None]
-    if not numbers:
-        raise ValueError(f"В колонке «{description}» нет числовых значений")
-    return sum(numbers)
-
-
-def _mean_column(
-    rows: list[dict[str, str]],
-    value_column: str,
-    count_column: str | None,
-    description: str,
-) -> float:
-    values: list[float] = []
-    weighted_values: list[tuple[float, float]] = []
-    for row in rows:
-        value = _parse_float(row.get(value_column))
-        if value is None:
-            continue
-        values.append(value)
-        weight = _parse_float(row.get(count_column)) if count_column is not None else None
-        if weight is not None and weight > 0:
-            weighted_values.append((value, weight))
-    if not values:
-        raise ValueError(f"В колонке «{description}» нет числовых значений")
-    if count_column is not None and len(weighted_values) == len(values):
-        total_weight = sum(weight for _, weight in weighted_values)
-        return sum(value * weight for value, weight in weighted_values) / total_weight
-    return statistics.fmean(values)
+def _required_float(row: dict[str, str], column: str, description: str, row_label: str) -> float:
+    value = _parse_float(row.get(column))
+    if value is None:
+        raise ValueError(f"{row_label}: в колонке «{description}» нет числового значения")
+    return value
 
 
 def emissions_mg_kwh(ppm: float, oxygen_percent: float, conversion_factor: float) -> float:
@@ -182,39 +158,39 @@ def emissions_mg_kwh(ppm: float, oxygen_percent: float, conversion_factor: float
     )
 
 
-def analyze_result_rows(rows: list[dict[str, str]]) -> list[ExperimentAnalysis]:
+def analyze_result_rows(rows: list[dict[str, str]]) -> list[RegimeAnalysis]:
     if not rows:
         raise ValueError("CSV результата не содержит строк данных")
     fieldnames = list(rows[0])
     columns = _result_columns(fieldnames)
-    groups: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
+    results: list[RegimeAnalysis] = []
+    for row_number, row in enumerate(rows, start=2):
         experiment = row.get(columns.experiment, "").strip() or "Без названия"
-        groups.setdefault(experiment, []).append(row)
-
-    results: list[ExperimentAnalysis] = []
-    for experiment, group_rows in groups.items():
-        heat_kj = _sum_column(group_rows, columns.heat_kj, "Количество тепла, кДж")
-        o2 = _mean_column(group_rows, columns.o2_mean, columns.o2_count, "% O2, среднее")
-        co = _mean_column(group_rows, columns.co_mean, columns.co_count, "ппм CO, среднее")
-        no = _mean_column(group_rows, columns.no_mean, columns.no_count, "ппм NO, среднее")
-        no2 = _mean_column(group_rows, columns.no2_mean, columns.no2_count, "ппм NO2, среднее")
+        regime = row.get(columns.regime, "").strip() or "Без названия"
+        row_label = f"{experiment}, режим {regime}, строка {row_number}"
+        heat_kj = _required_float(row, columns.heat_kj, "Количество тепла, кДж", row_label)
+        o2 = _required_float(row, columns.o2_mean, "% O2, среднее", row_label)
+        co = _required_float(row, columns.co_mean, "ппм CO, среднее", row_label)
+        no = _required_float(row, columns.no_mean, "ппм NO, среднее", row_label)
+        no2 = _required_float(row, columns.no2_mean, "ппм NO2, среднее", row_label)
         try:
             co_mg_kwh = emissions_mg_kwh(co, o2, CO_CONVERSION_FACTOR)
             no_mg_kwh = emissions_mg_kwh(no, o2, NO_CONVERSION_FACTOR)
             no2_mg_kwh = emissions_mg_kwh(no2, o2, NO_CONVERSION_FACTOR)
         except ValueError as exc:
-            raise ValueError(f"{experiment}: {exc}") from exc
+            raise ValueError(f"{row_label}: {exc}") from exc
         results.append(
-            ExperimentAnalysis(
+            RegimeAnalysis(
                 experiment_name=experiment,
-                regime_count=len(group_rows),
-                heat_kj_total=heat_kj,
-                heat_kwh_total=heat_kj / 3600.0,
-                o2_percent_mean=o2,
-                co_ppm_mean=co,
-                no_ppm_mean=no,
-                no2_ppm_mean=no2,
+                regime_name=regime,
+                start_time=row.get(columns.start, "").strip() if columns.start else "",
+                end_time=row.get(columns.end, "").strip() if columns.end else "",
+                heat_kj=heat_kj,
+                heat_kwh=heat_kj / 3600.0,
+                o2_percent=o2,
+                co_ppm=co,
+                no_ppm=no,
+                no2_ppm=no2,
                 co_mg_kwh=co_mg_kwh,
                 no_mg_kwh=no_mg_kwh,
                 no2_mg_kwh=no2_mg_kwh,
@@ -238,27 +214,29 @@ def read_result_csv(path: str | Path) -> list[dict[str, str]]:
     return list(reader)
 
 
-def analyze_result_csv(path: str | Path) -> list[ExperimentAnalysis]:
+def analyze_result_csv(path: str | Path) -> list[RegimeAnalysis]:
     return analyze_result_rows(read_result_csv(path))
 
 
-def analysis_to_row(result: ExperimentAnalysis) -> dict[str, object]:
+def analysis_to_row(result: RegimeAnalysis) -> dict[str, object]:
     return {
         "Название эксперимента": result.experiment_name,
-        "Режимов": result.regime_count,
-        "Суммарное количество тепла, кДж": result.heat_kj_total,
-        "Суммарное количество тепла, кВт·ч": result.heat_kwh_total,
-        "O2, среднее, %": result.o2_percent_mean,
-        "CO, среднее, ppm": result.co_ppm_mean,
-        "NO, среднее, ppm": result.no_ppm_mean,
-        "NO2, среднее, ppm": result.no2_ppm_mean,
+        "Режим": result.regime_name,
+        "Начало режима": result.start_time,
+        "Конец режима": result.end_time,
+        "Количество тепла, кДж": result.heat_kj,
+        "Количество тепла, кВт·ч": result.heat_kwh,
+        "O2, %": result.o2_percent,
+        "CO, ppm": result.co_ppm,
+        "NO, ppm": result.no_ppm,
+        "NO2, ppm": result.no2_ppm,
         "CO, мг/кВт·ч": result.co_mg_kwh,
         "NO, мг/кВт·ч": result.no_mg_kwh,
         "NO2, мг/кВт·ч": result.no2_mg_kwh,
     }
 
 
-def export_analysis_csv(path: str | Path, results: list[ExperimentAnalysis]) -> None:
+def export_analysis_csv(path: str | Path, results: list[RegimeAnalysis]) -> None:
     if not results:
         raise ValueError("Нет результатов анализа для экспорта")
     try:

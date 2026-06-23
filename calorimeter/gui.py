@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from .models import GasData, OscilloscopeData, PlcData, ProcessingSettings, Regime
 from .processing import common_time_range, export_csv, gas_contains_minute, process_experiment
 from .readers import read_gas_xlsx, read_oscilloscope_txt, read_plc_csv
-from .result_analysis import ExperimentAnalysis, analyze_result_csv, export_analysis_csv
+from .result_analysis import RegimeAnalysis, analyze_result_csv, export_analysis_csv
 
 
 def parse_user_time(value: str, reference_date: date) -> datetime:
@@ -85,7 +85,7 @@ class CalorimeterApp(ttk.Frame):
         self.analysis_status = tk.StringVar(
             value="Выберите CSV, полученный на первой вкладке, и запустите анализ."
         )
-        self.analysis_results: list[ExperimentAnalysis] = []
+        self.analysis_results: list[RegimeAnalysis] = []
 
         self._build_ui()
 
@@ -261,15 +261,15 @@ class CalorimeterApp(ttk.Frame):
         ttk.Label(
             source,
             text=(
-                "Анализ группирует строки по названию эксперимента, суммирует тепло и "
-                "пересчитывает CO, NO, NO2 из ppm в мг/кВт·ч."
+                "Анализ оставляет каждый режим отдельной строкой и пересчитывает "
+                "CO, NO, NO2 из ppm в мг/кВт·ч."
             ),
             foreground="#555555",
             wraplength=1040,
             justify="left",
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
-        table_frame = ttk.LabelFrame(parent, text="2. Сводка по экспериментам", padding=10)
+        table_frame = ttk.LabelFrame(parent, text="2. Сводка по режимам", padding=10)
         table_frame.grid(row=1, column=0, sticky="nsew", pady=10)
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
@@ -277,7 +277,7 @@ class CalorimeterApp(ttk.Frame):
             table_frame,
             columns=(
                 "experiment",
-                "regimes",
+                "regime",
                 "heat_kj",
                 "heat_kwh",
                 "o2",
@@ -293,7 +293,7 @@ class CalorimeterApp(ttk.Frame):
         )
         for column, label, width in (
             ("experiment", "Эксперимент", 180),
-            ("regimes", "Режимов", 75),
+            ("regime", "Режим", 140),
             ("heat_kj", "Тепло, кДж", 110),
             ("heat_kwh", "Тепло, кВт·ч", 120),
             ("o2", "O2, %", 85),
@@ -380,7 +380,7 @@ class CalorimeterApp(ttk.Frame):
             return
         self._refresh_analysis_table()
         self.analysis_status.set(
-            f"Готово: проанализировано экспериментов {len(self.analysis_results)}"
+            f"Готово: проанализировано режимов {len(self.analysis_results)}"
         )
 
     def _refresh_analysis_table(self) -> None:
@@ -393,15 +393,15 @@ class CalorimeterApp(ttk.Frame):
                 iid=str(index),
                 values=(
                     result.experiment_name,
-                    result.regime_count,
-                    _format_analysis_number(result.heat_kj_total),
-                    _format_analysis_number(result.heat_kwh_total),
-                    _format_analysis_number(result.o2_percent_mean),
-                    _format_analysis_number(result.co_ppm_mean),
+                    result.regime_name,
+                    _format_analysis_number(result.heat_kj),
+                    _format_analysis_number(result.heat_kwh),
+                    _format_analysis_number(result.o2_percent),
+                    _format_analysis_number(result.co_ppm),
                     _format_analysis_number(result.co_mg_kwh),
-                    _format_analysis_number(result.no_ppm_mean),
+                    _format_analysis_number(result.no_ppm),
                     _format_analysis_number(result.no_mg_kwh),
-                    _format_analysis_number(result.no2_ppm_mean),
+                    _format_analysis_number(result.no2_ppm),
                     _format_analysis_number(result.no2_mg_kwh),
                 ),
             )
