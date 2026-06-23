@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import tkinter as tk
 from datetime import date, datetime, timedelta
@@ -9,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from .models import GasData, OscilloscopeData, PlcData, ProcessingSettings, Regime
 from .processing import common_time_range, export_csv, gas_contains_minute, process_experiment
 from .readers import read_gas_xlsx, read_oscilloscope_txt, read_plc_csv
+from .result_analysis import ExperimentAnalysis, analyze_result_csv, export_analysis_csv
 
 
 def parse_user_time(value: str, reference_date: date) -> datetime:
@@ -46,6 +48,12 @@ def _format_time(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _format_analysis_number(value: float) -> str:
+    if math.isnan(value) or math.isinf(value):
+        return ""
+    return f"{value:.6g}"
+
+
 class CalorimeterApp(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master, padding=12)
@@ -73,6 +81,11 @@ class CalorimeterApp(ttk.Frame):
         self.status = tk.StringVar(
             value="Выберите XLSX газоанализатора. TXT датчиков можно добавить при необходимости."
         )
+        self.analysis_csv_path = tk.StringVar()
+        self.analysis_status = tk.StringVar(
+            value="Выберите CSV, полученный на первой вкладке, и запустите анализ."
+        )
+        self.analysis_results: list[ExperimentAnalysis] = []
 
         self._build_ui()
 
@@ -81,9 +94,23 @@ class CalorimeterApp(ttk.Frame):
         self.master.columnconfigure(0, weight=1)
         self.master.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(0, weight=1)
 
-        sources = ttk.LabelFrame(self, text="1. Исходные данные", padding=10)
+        notebook = ttk.Notebook(self)
+        notebook.grid(row=0, column=0, sticky="nsew")
+        processing_tab = ttk.Frame(notebook)
+        analysis_tab = ttk.Frame(notebook)
+        notebook.add(processing_tab, text="Обработка данных")
+        notebook.add(analysis_tab, text="Анализ результата")
+
+        self._build_processing_tab(processing_tab)
+        self._build_analysis_tab(analysis_tab)
+
+    def _build_processing_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(2, weight=1)
+
+        sources = ttk.LabelFrame(parent, text="1. Исходные данные", padding=10)
         sources.grid(row=0, column=0, sticky="ew")
         sources.columnconfigure(1, weight=1)
         self._file_row(
@@ -121,7 +148,7 @@ class CalorimeterApp(ttk.Frame):
             row=4, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
 
-        settings = ttk.LabelFrame(self, text="2. Калибровка и свойства теплоносителя", padding=10)
+        settings = ttk.LabelFrame(parent, text="2. Калибровка и свойства теплоносителя", padding=10)
         settings.grid(row=1, column=0, sticky="ew", pady=10)
         for column in (1, 3, 5):
             settings.columnconfigure(column, weight=1)
@@ -145,7 +172,7 @@ class CalorimeterApp(ttk.Frame):
             justify="left",
         ).grid(row=3, column=0, columnspan=6, sticky="w", pady=(7, 0))
 
-        regimes_frame = ttk.LabelFrame(self, text="3. Стационарные режимы", padding=10)
+        regimes_frame = ttk.LabelFrame(parent, text="3. Стационарные режимы", padding=10)
         regimes_frame.grid(row=2, column=0, sticky="nsew")
         regimes_frame.columnconfigure(0, weight=1)
         regimes_frame.rowconfigure(1, weight=1)
@@ -204,11 +231,98 @@ class CalorimeterApp(ttk.Frame):
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.regime_table.configure(yscrollcommand=scrollbar.set)
 
-        actions = ttk.Frame(self)
+        actions = ttk.Frame(parent)
         actions.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         actions.columnconfigure(0, weight=1)
         ttk.Label(actions, textvariable=self.status).grid(row=0, column=0, sticky="w")
         ttk.Button(actions, text="Рассчитать и сохранить CSV", command=self._process).grid(
+            row=0, column=1, sticky="e"
+        )
+
+    def _build_analysis_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        source = ttk.LabelFrame(parent, text="1. CSV результата первой вкладки", padding=10)
+        source.grid(row=0, column=0, sticky="ew")
+        source.columnconfigure(1, weight=1)
+        self._file_row(
+            source,
+            0,
+            "Итоговый CSV",
+            self.analysis_csv_path,
+            (("CSV", "*.csv"),),
+        )
+        ttk.Button(
+            source,
+            text="Загрузить и проанализировать",
+            command=self._analyze_result_csv,
+        ).grid(row=1, column=2, sticky="e", pady=(8, 0))
+        ttk.Label(
+            source,
+            text=(
+                "Анализ группирует строки по названию эксперимента, суммирует тепло и "
+                "пересчитывает CO, NO, NO2 из ppm в мг/кВт·ч."
+            ),
+            foreground="#555555",
+            wraplength=1040,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        table_frame = ttk.LabelFrame(parent, text="2. Сводка по экспериментам", padding=10)
+        table_frame.grid(row=1, column=0, sticky="nsew", pady=10)
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        self.analysis_table = ttk.Treeview(
+            table_frame,
+            columns=(
+                "experiment",
+                "regimes",
+                "heat_kj",
+                "heat_kwh",
+                "o2",
+                "co_ppm",
+                "co_mg",
+                "no_ppm",
+                "no_mg",
+                "no2_ppm",
+                "no2_mg",
+            ),
+            show="headings",
+            height=12,
+        )
+        for column, label, width in (
+            ("experiment", "Эксперимент", 180),
+            ("regimes", "Режимов", 75),
+            ("heat_kj", "Тепло, кДж", 110),
+            ("heat_kwh", "Тепло, кВт·ч", 120),
+            ("o2", "O2, %", 85),
+            ("co_ppm", "CO, ppm", 90),
+            ("co_mg", "CO, мг/кВт·ч", 125),
+            ("no_ppm", "NO, ppm", 90),
+            ("no_mg", "NO, мг/кВт·ч", 125),
+            ("no2_ppm", "NO2, ppm", 90),
+            ("no2_mg", "NO2, мг/кВт·ч", 130),
+        ):
+            self.analysis_table.heading(column, text=label)
+            self.analysis_table.column(column, width=width, minwidth=70)
+        self.analysis_table.grid(row=0, column=0, sticky="nsew")
+        y_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.analysis_table.yview)
+        y_scrollbar.grid(row=0, column=1, sticky="ns")
+        x_scrollbar = ttk.Scrollbar(
+            table_frame, orient="horizontal", command=self.analysis_table.xview
+        )
+        x_scrollbar.grid(row=1, column=0, sticky="ew")
+        self.analysis_table.configure(
+            yscrollcommand=y_scrollbar.set,
+            xscrollcommand=x_scrollbar.set,
+        )
+
+        actions = ttk.Frame(parent)
+        actions.grid(row=2, column=0, sticky="ew")
+        actions.columnconfigure(0, weight=1)
+        ttk.Label(actions, textvariable=self.analysis_status).grid(row=0, column=0, sticky="w")
+        ttk.Button(actions, text="Сохранить анализ CSV", command=self._save_analysis_csv).grid(
             row=0, column=1, sticky="e"
         )
 
@@ -248,6 +362,73 @@ class CalorimeterApp(ttk.Frame):
         selected = filedialog.askopenfilename(filetypes=filetypes + (("Все файлы", "*.*"),))
         if selected:
             variable.set(selected)
+
+    def _analyze_result_csv(self) -> None:
+        path = self.analysis_csv_path.get().strip()
+        if not path:
+            messagebox.showerror("Не выбран CSV", "Укажите CSV, полученный на первой вкладке.")
+            return
+        self.analysis_status.set("Чтение и анализ CSV…")
+        self.master.update_idletasks()
+        try:
+            self.analysis_results = analyze_result_csv(path)
+        except ValueError as exc:
+            self.analysis_results = []
+            self._refresh_analysis_table()
+            self.analysis_status.set("Ошибка анализа")
+            messagebox.showerror("Ошибка анализа CSV", str(exc))
+            return
+        self._refresh_analysis_table()
+        self.analysis_status.set(
+            f"Готово: проанализировано экспериментов {len(self.analysis_results)}"
+        )
+
+    def _refresh_analysis_table(self) -> None:
+        for item in self.analysis_table.get_children():
+            self.analysis_table.delete(item)
+        for index, result in enumerate(self.analysis_results):
+            self.analysis_table.insert(
+                "",
+                "end",
+                iid=str(index),
+                values=(
+                    result.experiment_name,
+                    result.regime_count,
+                    _format_analysis_number(result.heat_kj_total),
+                    _format_analysis_number(result.heat_kwh_total),
+                    _format_analysis_number(result.o2_percent_mean),
+                    _format_analysis_number(result.co_ppm_mean),
+                    _format_analysis_number(result.co_mg_kwh),
+                    _format_analysis_number(result.no_ppm_mean),
+                    _format_analysis_number(result.no_mg_kwh),
+                    _format_analysis_number(result.no2_ppm_mean),
+                    _format_analysis_number(result.no2_mg_kwh),
+                ),
+            )
+
+    def _save_analysis_csv(self) -> None:
+        if not self.analysis_results:
+            messagebox.showinfo(
+                "Нет результатов анализа",
+                "Сначала загрузите и проанализируйте CSV результата.",
+            )
+            return
+        source_name = Path(self.analysis_csv_path.get().strip()).stem or "result"
+        destination = filedialog.asksaveasfilename(
+            title="Сохранить CSV анализа",
+            defaultextension=".csv",
+            initialfile=f"{source_name}_analysis.csv",
+            filetypes=(("CSV", "*.csv"), ("Все файлы", "*.*")),
+        )
+        if not destination:
+            return
+        try:
+            export_analysis_csv(destination, self.analysis_results)
+        except ValueError as exc:
+            messagebox.showerror("Ошибка экспорта анализа", str(exc))
+            return
+        self.analysis_status.set(f"CSV анализа сохранен: {destination}")
+        messagebox.showinfo("Анализ сохранен", f"CSV анализа сохранен:\n{destination}")
 
     def _load_sources(self) -> None:
         gas_path = self.gas_path.get().strip()
