@@ -54,6 +54,58 @@ def _format_analysis_number(value: float) -> str:
     return f"{value:.6g}"
 
 
+ATOMIZER_KIND_TO_CODE = {
+    "Пар (V)": "V",
+    "Воздух (A)": "A",
+}
+ATOMIZER_CODE_TO_KIND = {value: key for key, value in ATOMIZER_KIND_TO_CODE.items()}
+
+
+def _format_flow_value(value: float) -> str:
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def build_regime_name(
+    fuel_flow_kg_h: float,
+    atomizer_code: str,
+    atomizer_flow_kg_h: float,
+    air_flow_kg_h: float | None = None,
+) -> str:
+    if fuel_flow_kg_h <= 0:
+        raise ValueError("Расход топлива должен быть больше нуля")
+    if atomizer_flow_kg_h <= 0:
+        raise ValueError("Расход распылителя должен быть больше нуля")
+    if air_flow_kg_h is not None and air_flow_kg_h <= 0:
+        raise ValueError("Расход воздуха должен быть больше нуля")
+    if atomizer_code not in ATOMIZER_CODE_TO_KIND:
+        raise ValueError("Выберите тип распылителя")
+    name = (
+        f"F{_format_flow_value(fuel_flow_kg_h)}"
+        f"{atomizer_code}{_format_flow_value(atomizer_flow_kg_h)}"
+    )
+    if air_flow_kg_h is not None:
+        name += f"A{_format_flow_value(air_flow_kg_h)}"
+    return name
+
+
+def parse_regime_name(value: str) -> tuple[float, str, float, float | None] | None:
+    match = re.fullmatch(
+        r"F(?P<fuel>\d+(?:\.\d+)?)(?P<atomizer>[VA])"
+        r"(?P<atomizer_flow>\d+(?:\.\d+)?)(?:A(?P<air>\d+(?:\.\d+)?))?",
+        value.strip(),
+    )
+    if match is None:
+        return None
+    air = match.group("air")
+    return (
+        float(match.group("fuel")),
+        match.group("atomizer"),
+        float(match.group("atomizer_flow")),
+        float(air) if air is not None else None,
+    )
+
+
 class CalorimeterApp(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master, padding=12)
@@ -74,6 +126,10 @@ class CalorimeterApp(ttk.Frame):
         self.cold_junction_temperature = tk.StringVar(value="25")
         self.density = tk.StringVar(value="1000")
         self.heat_capacity = tk.StringVar(value="4184")
+        self.fuel_flow_kg_h = tk.StringVar()
+        self.atomizer_kind = tk.StringVar(value="Пар (V)")
+        self.atomizer_flow_kg_h = tk.StringVar()
+        self.air_flow_kg_h = tk.StringVar()
         self.regime_name = tk.StringVar()
         self.regime_start = tk.StringVar()
         self.regime_end = tk.StringVar()
@@ -86,6 +142,15 @@ class CalorimeterApp(ttk.Frame):
             value="Выберите CSV, полученный на первой вкладке, и запустите анализ."
         )
         self.analysis_results: list[RegimeAnalysis] = []
+        self._suspend_regime_name_update = False
+
+        for variable in (
+            self.fuel_flow_kg_h,
+            self.atomizer_kind,
+            self.atomizer_flow_kg_h,
+            self.air_flow_kg_h,
+        ):
+            variable.trace_add("write", self._on_regime_flow_changed)
 
         self._build_ui()
 
@@ -179,32 +244,52 @@ class CalorimeterApp(ttk.Frame):
 
         editor = ttk.Frame(regimes_frame)
         editor.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        editor.columnconfigure(1, weight=1)
-        editor.columnconfigure(3, weight=1)
-        editor.columnconfigure(5, weight=1)
-        self._entry(editor, 0, 0, "Название режима", self.regime_name, width=18)
-        ttk.Label(editor, text="Начало").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=3)
+        for column in (1, 3, 5, 7):
+            editor.columnconfigure(column, weight=1)
+        self._entry(editor, 0, 0, "Топливо F, кг/ч", self.fuel_flow_kg_h, width=8)
+        ttk.Label(editor, text="Распылитель").grid(
+            row=0, column=2, sticky="w", padx=(0, 6), pady=3
+        )
+        self.atomizer_combo = ttk.Combobox(
+            editor,
+            textvariable=self.atomizer_kind,
+            values=tuple(ATOMIZER_KIND_TO_CODE),
+            width=12,
+            state="readonly",
+        )
+        self.atomizer_combo.grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=3)
+        self._entry(editor, 0, 4, "Расход расп., кг/ч", self.atomizer_flow_kg_h, width=8)
+        self._entry(editor, 0, 6, "Воздух A, кг/ч (опц.)", self.air_flow_kg_h, width=8)
+
+        ttk.Label(editor, text="Название режима").grid(
+            row=1, column=0, sticky="w", padx=(0, 6), pady=3
+        )
+        ttk.Entry(editor, textvariable=self.regime_name, width=18, state="readonly").grid(
+            row=1, column=1, sticky="ew", padx=(0, 8), pady=3
+        )
+        ttk.Label(editor, text="Начало").grid(row=1, column=2, sticky="w", padx=(0, 6), pady=3)
         self.start_time_combo = ttk.Combobox(
             editor, textvariable=self.regime_start, width=8, state="readonly"
         )
-        self.start_time_combo.grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=3)
+        self.start_time_combo.grid(row=1, column=3, sticky="ew", padx=(0, 8), pady=3)
         self.start_time_combo.bind("<<ComboboxSelected>>", self._on_start_time_selected)
-        ttk.Label(editor, text="Конец").grid(row=0, column=4, sticky="w", padx=(0, 6), pady=3)
+        ttk.Label(editor, text="Конец").grid(row=1, column=4, sticky="w", padx=(0, 6), pady=3)
         self.end_time_combo = ttk.Combobox(
             editor, textvariable=self.regime_end, width=8, state="readonly"
         )
-        self.end_time_combo.grid(row=0, column=5, sticky="ew", padx=(0, 8), pady=3)
-        ttk.Button(editor, text="Добавить", command=self._add_regime).grid(row=0, column=6, padx=(8, 3))
-        ttk.Button(editor, text="Изменить", command=self._update_regime).grid(row=0, column=7, padx=3)
-        ttk.Button(editor, text="Удалить", command=self._delete_regime).grid(row=0, column=8, padx=(3, 0))
+        self.end_time_combo.grid(row=1, column=5, sticky="ew", padx=(0, 8), pady=3)
+        ttk.Button(editor, text="Добавить", command=self._add_regime).grid(row=1, column=6, padx=(8, 3))
+        ttk.Button(editor, text="Изменить", command=self._update_regime).grid(row=1, column=7, padx=3)
+        ttk.Button(editor, text="Удалить", command=self._delete_regime).grid(row=1, column=8, padx=(3, 0))
         ttk.Label(
             editor,
             text=(
-                "Выберите начало в формате ЧЧ:ММ из XLSX; конец автоматически "
-                "ставится через 2 минуты. В списке конца остаются только времена позже начала."
+                "Название режима формируется из расходов: F — топливо, V — пар распылителя, "
+                "A — воздух. Например: F1V0.8A7.5. Начало выбирается из XLSX; конец "
+                "автоматически ставится через 2 минуты."
             ),
             foreground="#555555",
-        ).grid(row=1, column=0, columnspan=9, sticky="w", pady=(7, 0))
+        ).grid(row=2, column=0, columnspan=9, sticky="w", pady=(7, 0))
 
         table_frame = ttk.Frame(regimes_frame)
         table_frame.grid(row=1, column=0, sticky="nsew")
@@ -363,6 +448,65 @@ class CalorimeterApp(ttk.Frame):
         if selected:
             variable.set(selected)
 
+    @staticmethod
+    def _silent_number(value: str) -> float | None:
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text.replace(",", "."))
+        except ValueError:
+            return None
+
+    def _atomizer_code(self) -> str:
+        code = ATOMIZER_KIND_TO_CODE.get(self.atomizer_kind.get())
+        if code is None:
+            raise ValueError("Выберите тип распылителя")
+        return code
+
+    def _on_regime_flow_changed(self, *_args: object) -> None:
+        if self._suspend_regime_name_update:
+            return
+        self._update_regime_name_from_flows()
+
+    def _update_regime_name_from_flows(self) -> None:
+        fuel = self._silent_number(self.fuel_flow_kg_h.get())
+        atomizer_flow = self._silent_number(self.atomizer_flow_kg_h.get())
+        air_text = self.air_flow_kg_h.get().strip()
+        air = self._silent_number(air_text) if air_text else None
+        atomizer_code = ATOMIZER_KIND_TO_CODE.get(self.atomizer_kind.get())
+        if (
+            fuel is None
+            or atomizer_flow is None
+            or atomizer_code is None
+            or fuel <= 0
+            or atomizer_flow <= 0
+            or (air_text and (air is None or air <= 0))
+        ):
+            self.regime_name.set("")
+            return
+        self.regime_name.set(build_regime_name(fuel, atomizer_code, atomizer_flow, air))
+
+    def _set_flow_fields_from_regime_name(self, name: str) -> None:
+        parsed = parse_regime_name(name)
+        self._suspend_regime_name_update = True
+        try:
+            if parsed is None:
+                self.fuel_flow_kg_h.set("")
+                self.atomizer_kind.set("Пар (V)")
+                self.atomizer_flow_kg_h.set("")
+                self.air_flow_kg_h.set("")
+                self.regime_name.set(name)
+                return
+            fuel, atomizer_code, atomizer_flow, air = parsed
+            self.fuel_flow_kg_h.set(_format_flow_value(fuel))
+            self.atomizer_kind.set(ATOMIZER_CODE_TO_KIND[atomizer_code])
+            self.atomizer_flow_kg_h.set(_format_flow_value(atomizer_flow))
+            self.air_flow_kg_h.set("" if air is None else _format_flow_value(air))
+        finally:
+            self._suspend_regime_name_update = False
+        self._update_regime_name_from_flows()
+
     def _analyze_result_csv(self) -> None:
         path = self.analysis_csv_path.get().strip()
         if not path:
@@ -499,6 +643,15 @@ class CalorimeterApp(ttk.Frame):
         reference = self._reference_date()
         if self.gas_data is None:
             raise ValueError("Сначала загрузите XLSX")
+        fuel = self._positive_number(self.fuel_flow_kg_h.get(), "Топливо F, кг/ч")
+        atomizer_flow = self._positive_number(
+            self.atomizer_flow_kg_h.get(), "Расход распылителя, кг/ч"
+        )
+        air = self._optional_number(self.air_flow_kg_h.get(), "Воздух A, кг/ч")
+        if air is not None and air <= 0:
+            raise ValueError("Поле «Воздух A, кг/ч» должно быть больше нуля")
+        name = build_regime_name(fuel, self._atomizer_code(), atomizer_flow, air)
+        self.regime_name.set(name)
         start = parse_user_time(self.regime_start.get(), reference)
         end = parse_user_time(self.regime_end.get(), reference)
         for label, value in (("начала", start), ("конца", end)):
@@ -507,7 +660,7 @@ class CalorimeterApp(ttk.Frame):
                     f"Время {label} {value:%H:%M} отсутствует в первой колонке XLSX"
                 )
         return Regime(
-            self.regime_name.get().strip(),
+            name,
             start,
             end,
         )
@@ -568,7 +721,7 @@ class CalorimeterApp(ttk.Frame):
         if index is None:
             return
         regime = self.regimes[index]
-        self.regime_name.set(regime.name)
+        self._set_flow_fields_from_regime_name(regime.name)
         self.regime_start.set(_format_editor_time(regime.start))
         self._refresh_end_time_options(regime.start)
         self.regime_end.set(_format_editor_time(regime.end))
@@ -594,6 +747,14 @@ class CalorimeterApp(ttk.Frame):
 
     def _clear_regime_editor(self, keep_name: bool = False) -> None:
         if not keep_name:
+            self._suspend_regime_name_update = True
+            try:
+                self.fuel_flow_kg_h.set("")
+                self.atomizer_kind.set("Пар (V)")
+                self.atomizer_flow_kg_h.set("")
+                self.air_flow_kg_h.set("")
+            finally:
+                self._suspend_regime_name_update = False
             self.regime_name.set("")
         self._refresh_end_time_options()
         self.regime_start.set("")
@@ -605,6 +766,13 @@ class CalorimeterApp(ttk.Frame):
             return float(value.strip().replace(",", "."))
         except ValueError as exc:
             raise ValueError(f"Поле «{name}» должно содержать число") from exc
+
+    @staticmethod
+    def _positive_number(value: str, name: str) -> float:
+        number = CalorimeterApp._number(value, name)
+        if number <= 0:
+            raise ValueError(f"Поле «{name}» должно быть больше нуля")
+        return number
 
     @staticmethod
     def _optional_number(value: str, name: str) -> float | None:
