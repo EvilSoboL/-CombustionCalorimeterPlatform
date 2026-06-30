@@ -10,6 +10,13 @@ from tkinter import filedialog, messagebox, ttk
 from .models import GasData, OscilloscopeData, PlcData, ProcessingSettings, Regime
 from .processing import common_time_range, export_csv, gas_contains_minute, process_experiment
 from .readers import read_gas_xlsx, read_oscilloscope_txt, read_plc_csv
+from .regime_names import (
+    ATOMIZER_CODE_TO_KIND,
+    ATOMIZER_KIND_TO_CODE,
+    build_regime_name,
+    format_flow_value,
+    parse_regime_name,
+)
 from .result_analysis import RegimeAnalysis, analyze_result_csv, export_analysis_csv
 
 
@@ -54,58 +61,6 @@ def _format_analysis_number(value: float) -> str:
     return f"{value:.6g}"
 
 
-ATOMIZER_KIND_TO_CODE = {
-    "Пар (V)": "V",
-    "Воздух (A)": "A",
-}
-ATOMIZER_CODE_TO_KIND = {value: key for key, value in ATOMIZER_KIND_TO_CODE.items()}
-
-
-def _format_flow_value(value: float) -> str:
-    text = f"{value:.6f}".rstrip("0").rstrip(".")
-    return text or "0"
-
-
-def build_regime_name(
-    fuel_flow_kg_h: float,
-    atomizer_code: str,
-    atomizer_flow_kg_h: float,
-    air_flow_kg_h: float | None = None,
-) -> str:
-    if fuel_flow_kg_h <= 0:
-        raise ValueError("Расход топлива должен быть больше нуля")
-    if atomizer_flow_kg_h <= 0:
-        raise ValueError("Расход распылителя должен быть больше нуля")
-    if air_flow_kg_h is not None and air_flow_kg_h <= 0:
-        raise ValueError("Расход воздуха должен быть больше нуля")
-    if atomizer_code not in ATOMIZER_CODE_TO_KIND:
-        raise ValueError("Выберите тип распылителя")
-    name = (
-        f"F{_format_flow_value(fuel_flow_kg_h)}"
-        f"{atomizer_code}{_format_flow_value(atomizer_flow_kg_h)}"
-    )
-    if air_flow_kg_h is not None:
-        name += f"A{_format_flow_value(air_flow_kg_h)}"
-    return name
-
-
-def parse_regime_name(value: str) -> tuple[float, str, float, float | None] | None:
-    match = re.fullmatch(
-        r"F(?P<fuel>\d+(?:\.\d+)?)(?P<atomizer>[VA])"
-        r"(?P<atomizer_flow>\d+(?:\.\d+)?)(?:A(?P<air>\d+(?:\.\d+)?))?",
-        value.strip(),
-    )
-    if match is None:
-        return None
-    air = match.group("air")
-    return (
-        float(match.group("fuel")),
-        match.group("atomizer"),
-        float(match.group("atomizer_flow")),
-        float(air) if air is not None else None,
-    )
-
-
 class CalorimeterApp(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master, padding=12)
@@ -138,6 +93,8 @@ class CalorimeterApp(ttk.Frame):
             value="Выберите XLSX газоанализатора. TXT датчиков можно добавить при необходимости."
         )
         self.analysis_csv_path = tk.StringVar()
+        self.steam_inlet_temperature_c = tk.StringVar()
+        self.steam_outlet_temperature_c = tk.StringVar()
         self.analysis_status = tk.StringVar(
             value="Выберите CSV, полученный на первой вкладке, и запустите анализ."
         )
@@ -331,6 +288,7 @@ class CalorimeterApp(ttk.Frame):
         source = ttk.LabelFrame(parent, text="1. CSV результата первой вкладки", padding=10)
         source.grid(row=0, column=0, sticky="ew")
         source.columnconfigure(1, weight=1)
+        source.columnconfigure(3, weight=1)
         self._file_row(
             source,
             0,
@@ -338,21 +296,24 @@ class CalorimeterApp(ttk.Frame):
             self.analysis_csv_path,
             (("CSV", "*.csv"),),
         )
+        self._entry(source, 1, 0, "T вход парогенератора, °C", self.steam_inlet_temperature_c)
+        self._entry(source, 1, 2, "T выход парогенератора, °C", self.steam_outlet_temperature_c)
         ttk.Button(
             source,
             text="Загрузить и проанализировать",
             command=self._analyze_result_csv,
-        ).grid(row=1, column=2, sticky="e", pady=(8, 0))
+        ).grid(row=1, column=4, sticky="e", pady=(8, 0))
         ttk.Label(
             source,
             text=(
                 "Анализ оставляет каждый режим отдельной строкой и пересчитывает "
-                "CO, NO, NO2 из ppm в мг/кВт·ч."
+                "CO, NO, NO2 из ppm в мг/кВт·ч. Тепло пара считается по разности "
+                "энтальпии между водой на входе и паром на выходе парогенератора."
             ),
             foreground="#555555",
             wraplength=1040,
             justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=2, column=0, columnspan=5, sticky="w", pady=(8, 0))
 
         table_frame = ttk.LabelFrame(parent, text="2. Сводка по режимам", padding=10)
         table_frame.grid(row=1, column=0, sticky="nsew", pady=10)
@@ -365,6 +326,10 @@ class CalorimeterApp(ttk.Frame):
                 "regime",
                 "heat_kj",
                 "heat_kwh",
+                "steam_heat",
+                "fuel_heat",
+                "fuel_mass",
+                "fuel_lhv",
                 "o2",
                 "co_ppm",
                 "co_mg",
@@ -381,6 +346,10 @@ class CalorimeterApp(ttk.Frame):
             ("regime", "Режим", 140),
             ("heat_kj", "Тепло, кДж", 110),
             ("heat_kwh", "Тепло, кВт·ч", 120),
+            ("steam_heat", "Тепло пара, кДж", 125),
+            ("fuel_heat", "Тепло топлива, кДж", 135),
+            ("fuel_mass", "Масса топлива, кг", 130),
+            ("fuel_lhv", "Уд. теплота, МДж/кг", 145),
             ("o2", "O2, %", 85),
             ("co_ppm", "CO, ppm", 90),
             ("co_mg", "CO, мг/кВт·ч", 125),
@@ -499,10 +468,10 @@ class CalorimeterApp(ttk.Frame):
                 self.regime_name.set(name)
                 return
             fuel, atomizer_code, atomizer_flow, air = parsed
-            self.fuel_flow_kg_h.set(_format_flow_value(fuel))
+            self.fuel_flow_kg_h.set(format_flow_value(fuel))
             self.atomizer_kind.set(ATOMIZER_CODE_TO_KIND[atomizer_code])
-            self.atomizer_flow_kg_h.set(_format_flow_value(atomizer_flow))
-            self.air_flow_kg_h.set("" if air is None else _format_flow_value(air))
+            self.atomizer_flow_kg_h.set(format_flow_value(atomizer_flow))
+            self.air_flow_kg_h.set("" if air is None else format_flow_value(air))
         finally:
             self._suspend_regime_name_update = False
         self._update_regime_name_from_flows()
@@ -515,7 +484,15 @@ class CalorimeterApp(ttk.Frame):
         self.analysis_status.set("Чтение и анализ CSV…")
         self.master.update_idletasks()
         try:
-            self.analysis_results = analyze_result_csv(path)
+            steam_inlet = self._number(
+                self.steam_inlet_temperature_c.get(),
+                "T вход парогенератора",
+            )
+            steam_outlet = self._number(
+                self.steam_outlet_temperature_c.get(),
+                "T выход парогенератора",
+            )
+            self.analysis_results = analyze_result_csv(path, steam_inlet, steam_outlet)
         except ValueError as exc:
             self.analysis_results = []
             self._refresh_analysis_table()
@@ -540,6 +517,10 @@ class CalorimeterApp(ttk.Frame):
                     result.regime_name,
                     _format_analysis_number(result.heat_kj),
                     _format_analysis_number(result.heat_kwh),
+                    _format_analysis_number(result.steam_heat_kj),
+                    _format_analysis_number(result.fuel_heat_kj),
+                    _format_analysis_number(result.fuel_mass_kg),
+                    _format_analysis_number(result.fuel_specific_heat_mj_kg),
                     _format_analysis_number(result.o2_percent),
                     _format_analysis_number(result.co_ppm),
                     _format_analysis_number(result.co_mg_kwh),
